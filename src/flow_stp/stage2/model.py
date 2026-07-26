@@ -80,6 +80,23 @@ class MLP(nn.Module):
         return self.net(x)
 
 
+def final_linear_layer(network: nn.Module) -> nn.Linear:
+    """Return the final ``nn.Linear`` layer in a network."""
+
+    linear_layers = [
+        module
+        for module in network.modules()
+        if isinstance(module, nn.Linear)
+    ]
+
+    if not linear_layers:
+        raise RuntimeError(
+            "The requested network contains no nn.Linear layers."
+        )
+
+    return linear_layers[-1]
+
+
 @dataclass(frozen=True)
 class Stage2Config:
     """Configuration for :class:`Stage2DynamicsModel`."""
@@ -97,6 +114,24 @@ class Stage2Config:
     clip_state_to_unit_interval: bool = False
     clamp_eps: float = 1e-5
 
+    # Null-dynamics defaults validated by the static-atlas control.
+    #
+    # Among transcriptionally equivalent solutions, prefer the
+    # minimum-movement solution.
+    velocity_penalty_weight: float = 1.0
+
+    # q remains unregularized by default, matching the validated
+    # static-atlas experiment.
+    source_penalty_weight: float = 0.0
+
+    # Initialize the identity-flow solution exactly.
+    zero_initialize_velocity: bool = True
+
+    # Initialize the ReLU source near zero while retaining an active
+    # gradient path through the output ReLU.
+    q_initial_bias: float = 1e-3
+    q_initial_weight_std: float = 1e-3
+
 
 class Stage2DynamicsModel(nn.Module):
     """Learn dynamics on frozen Stage 1 anatomical coordinates."""
@@ -111,6 +146,18 @@ class Stage2DynamicsModel(nn.Module):
             raise ValueError("n_flow_steps must be positive.")
         if not 0.0 <= config.clamp_eps < 0.5:
             raise ValueError("clamp_eps must lie in [0, 0.5).")
+        if config.velocity_penalty_weight < 0.0:
+            raise ValueError(
+                "velocity_penalty_weight must be nonnegative."
+            )
+        if config.source_penalty_weight < 0.0:
+            raise ValueError(
+                "source_penalty_weight must be nonnegative."
+            )
+        if config.q_initial_weight_std < 0.0:
+            raise ValueError(
+                "q_initial_weight_std must be nonnegative."
+            )
 
         # Direct velocity parameterization V(z,t)=NN_V(z,t).
         self.v_net = MLP(
@@ -120,14 +167,38 @@ class Stage2DynamicsModel(nn.Module):
             activation="tanh",
         )
 
-        # Nonnegative source q(z,t)=softplus(NN_q(z,t)).
-        # q(z,0) is deliberately free to be nonzero.
+        # Initialize the identity-flow solution exactly. Only the
+        # final layer is zeroed, so V can become nonzero when the
+        # data provide sufficient evidence.
+        if config.zero_initialize_velocity:
+            velocity_final_layer = final_linear_layer(self.v_net)
+            nn.init.zeros_(velocity_final_layer.weight)
+
+            if velocity_final_layer.bias is not None:
+                nn.init.zeros_(velocity_final_layer.bias)
+
+        # Nonnegative source q(z,t)=ReLU(NN_q(z,t)).
+        # ReLU hidden layers match the validated notebook model.
         self.q_net = MLP(
             in_dim=2,
             out_dim=1,
             hidden=config.field_hidden,
-            activation="tanh",
+            activation="relu",
         )
+
+        source_final_layer = final_linear_layer(self.q_net)
+
+        nn.init.normal_(
+            source_final_layer.weight,
+            mean=0.0,
+            std=config.q_initial_weight_std,
+        )
+
+        if source_final_layer.bias is not None:
+            nn.init.constant_(
+                source_final_layer.bias,
+                config.q_initial_bias,
+            )
 
         # Design-document-style decoder log(mu_g)=A_g(z,rho).
         self.expression_decoder = MLP(
@@ -162,11 +233,16 @@ class Stage2DynamicsModel(nn.Module):
         return self.v_net(torch.cat((z, t), dim=1))
 
     def q(self, z: Tensor, t: Tensor) -> Tensor:
-        """Evaluate ``q(z,t)>=0``; no condition ``q(z,0)=0`` is imposed."""
+        """Evaluate ``q(z,t)>=0`` with an exact-zero-capable ReLU."""
         z = as_col(z)
         t = as_col(t)
         self._check_matching_rows(z, t)
-        return F.softplus(self.q_net(torch.cat((z, t), dim=1)))
+
+        raw_q = self.q_net(
+            torch.cat((z, t), dim=1)
+        )
+
+        return F.relu(raw_q)
 
     def rho0(self, z: Tensor) -> Tensor:
         """Return the fixed spatially constant initial condition."""
@@ -324,14 +400,63 @@ class Stage2DynamicsModel(nn.Module):
             time=batch["time"],
             log_library_size=batch.get("log_library_size"),
         )
-        data_loss = self.poisson_nll(batch["counts"], output["log_mu"])
+        data_loss = self.poisson_nll(
+            batch["counts"],
+            output["log_mu"],
+        )
+
+        velocity_values = self.velocity(
+            batch["z"],
+            batch["time"],
+        )
+
+        source_values = self.q(
+            batch["z"],
+            batch["time"],
+        )
+
+        # Quadratic movement/friction cost.
+        velocity_penalty = (
+            velocity_values
+            .square()
+            .mean()
+        )
+
+        # Included for optional future experiments. Its default
+        # weight is zero, matching the validated control.
+        source_penalty = source_values.mean()
+
+        total_loss = (
+            data_loss
+            + self.config.velocity_penalty_weight
+            * velocity_penalty
+            + self.config.source_penalty_weight
+            * source_penalty
+        )
 
         diagnostics = {
-            "total": data_loss.detach(),
+            "total": total_loss.detach(),
             "data": data_loss.detach(),
+            "velocity_penalty": velocity_penalty.detach(),
+            "weighted_velocity_penalty": (
+                self.config.velocity_penalty_weight
+                * velocity_penalty
+            ).detach(),
+            "source_penalty": source_penalty.detach(),
+            "weighted_source_penalty": (
+                self.config.source_penalty_weight
+                * source_penalty
+            ).detach(),
+            "velocity_mean": velocity_values.mean().detach(),
+            "velocity_mean_absolute": (
+                velocity_values.abs().mean().detach()
+            ),
+            "velocity_mean_squared": velocity_penalty.detach(),
+            "source_mean": source_values.mean().detach(),
             "z_mean": output["z"].mean().detach(),
             "a_mean": output["a"].mean().detach(),
             "rho_mean": output["rho"].mean().detach(),
             "rho_min": output["rho"].min().detach(),
         }
-        return data_loss, diagnostics
+
+        return total_loss, diagnostics
