@@ -1,4 +1,5 @@
-"""Data handoff utilities between Stage 1 and Stage 2."""
+\
+"""Data handoff from frozen Stage 1 coordinates to Stage 2."""
 
 from __future__ import annotations
 
@@ -25,10 +26,7 @@ def normalize_times(
     time_min: Optional[float] = None,
     time_max: Optional[float] = None,
 ) -> torch.Tensor:
-    """Normalize observation times to ``[0,1]``.
-
-    The earliest observed time becomes exactly zero.
-    """
+    """Normalize observation times to [0,1], with the earliest time at zero."""
     times_tensor = _float_tensor(times, "times").reshape(-1)
 
     if time_min is None:
@@ -43,7 +41,7 @@ def normalize_times(
 
 
 class Stage2Dataset(Dataset):
-    """Dataset containing frozen Stage 1 coordinates and Stage 2 observations."""
+    """Frozen Stage 1 coordinate, normalized time, and raw gene counts."""
 
     def __init__(
         self,
@@ -51,7 +49,6 @@ class Stage2Dataset(Dataset):
         z: ArrayLike,
         time: ArrayLike,
         counts: ArrayLike,
-        log_library_size: Optional[ArrayLike] = None,
     ) -> None:
         self.z = _float_tensor(z, "z").reshape(-1)
         self.time = _float_tensor(time, "time").reshape(-1)
@@ -60,7 +57,7 @@ class Stage2Dataset(Dataset):
         if self.counts.ndim != 2:
             raise ValueError("counts must have shape [cells, genes].")
 
-        n_cells = self.counts.shape[0]
+        n_cells = int(self.counts.shape[0])
         if self.z.numel() != n_cells or self.time.numel() != n_cells:
             raise ValueError("z, time, and counts must contain the same cells.")
 
@@ -71,27 +68,12 @@ class Stage2Dataset(Dataset):
         if torch.any(self.counts < 0.0):
             raise ValueError("counts must be nonnegative.")
 
-        if log_library_size is None:
-            self.log_library_size = None
-        else:
-            self.log_library_size = _float_tensor(
-                log_library_size,
-                "log_library_size",
-            ).reshape(-1)
-            if self.log_library_size.numel() != n_cells:
-                raise ValueError(
-                    "log_library_size must contain one value per cell."
-                )
-
     def __len__(self) -> int:
-        return self.counts.shape[0]
+        return int(self.counts.shape[0])
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        item = {
+        return {
             "z": self.z[index],
             "time": self.time[index],
             "counts": self.counts[index],
         }
-        if self.log_library_size is not None:
-            item["log_library_size"] = self.log_library_size[index]
-        return item
