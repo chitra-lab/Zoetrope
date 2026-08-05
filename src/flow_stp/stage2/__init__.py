@@ -1,22 +1,39 @@
-"""Public API for the frozen-axis Stage 2 dynamics model."""
+\
+"""Flow-STP Stage 2: centered neural rho with a general expression decoder.
+
+Stage 1 supplies a frozen anatomical coordinate z. Stage 2 fits a t=0 neural
+anatomical baseline, a centered scalar neural developmental coordinate, and a
+general decoder D(z,rho). The former constrained/PDE implementation has been
+removed from the package.
+"""
 
 from .data import Stage2Dataset, normalize_times
-from .diagnostics import (
-    evaluate_fields_on_grid,
-    flow_health_diagnostics,
-    initial_condition_diagnostics,
+from .basic import (
+    BasicStage2Config,
+    BasicStage2Model,
+    BasicStage2TrainingConfig,
+    BasicStage2TrainingResult,
+    basic_initial_condition_diagnostics,
+    evaluate_basic_decoder_derivative,
+    evaluate_basic_fields_on_grid,
+    evaluate_basic_poisson_nll,
+    train_basic_baseline_one_epoch,
+    train_basic_model,
+    train_basic_one_epoch,
 )
-from .model import Stage2Config, Stage2DynamicsModel
-from .training import evaluate_poisson_nll, train_one_epoch
 
 __all__ = [
-    "Stage2Config",
     "Stage2Dataset",
-    "Stage2DynamicsModel",
-    "evaluate_fields_on_grid",
-    "evaluate_poisson_nll",
-    "flow_health_diagnostics",
-    "initial_condition_diagnostics",
     "normalize_times",
-    "train_one_epoch",
+    "BasicStage2Config",
+    "BasicStage2Model",
+    "BasicStage2TrainingConfig",
+    "BasicStage2TrainingResult",
+    "basic_initial_condition_diagnostics",
+    "evaluate_basic_decoder_derivative",
+    "evaluate_basic_fields_on_grid",
+    "evaluate_basic_poisson_nll",
+    "train_basic_baseline_one_epoch",
+    "train_basic_model",
+    "train_basic_one_epoch",
 ]
