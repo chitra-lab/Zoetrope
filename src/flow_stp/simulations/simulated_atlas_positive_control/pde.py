@@ -19,7 +19,10 @@ class PDEResult:
     z: np.ndarray
     time: np.ndarray
     cohort_table: pd.DataFrame
+    q_over_time: np.ndarray
     velocity_by_cohort: dict[str, np.ndarray]
+    velocity_over_time: np.ndarray
+    velocity_stopping_points_over_time: np.ndarray
     density_by_cohort: dict[str, np.ndarray]
     moment_by_cohort: dict[str, np.ndarray]
     rho_by_cohort: dict[str, np.ndarray]
@@ -79,15 +82,75 @@ def _advect_source_step(
 
 
 def _cohort_table(config: SimulationConfig) -> pd.DataFrame:
-    edges = config.stopping_layer_edges
+    edges = np.asarray(
+        config.stopping_layer_edges,
+        dtype=float,
+    )
+
+    stopping_points = np.sort(
+        np.asarray(
+            config.stopping_points,
+            dtype=float,
+        )
+    )[::-1]
+
+    birth_times = np.asarray(
+        config.birth_times,
+        dtype=float,
+    )
+
+    n_cohorts = len(stopping_points)
+
+    if len(birth_times) != n_cohorts:
+        raise ValueError(
+            "birth_times and stopping_points must have equal length."
+        )
+
     return pd.DataFrame(
         {
-            "cohort": [f"layer_{index + 1}" for index in range(config.n_timepoints)],
-            "birth_time": config.birth_times,
-            "stopping_position": config.stopping_points,
-            "layer_lower_edge": edges[:-1],
-            "layer_upper_edge": edges[1:],
+            "cohort": [
+                f"layer_{index + 1}"
+                for index in range(n_cohorts)
+            ],
+            "birth_time": birth_times,
+            "stopping_position": stopping_points,
+            "layer_lower_edge": edges[:-1][::-1],
+            "layer_upper_edge": edges[1:][::-1],
         }
+    )
+
+
+def _velocity_at_time(
+    t: float,
+    *,
+    tissue_times: np.ndarray,
+    profiles: np.ndarray,
+) -> np.ndarray:
+    """Linearly interpolate V(z,t) between tissue times."""
+    if t <= tissue_times[0]:
+        return profiles[0]
+
+    if t >= tissue_times[-1]:
+        return profiles[-1]
+
+    left = int(
+        np.searchsorted(
+            tissue_times,
+            t,
+            side="right",
+        )
+        - 1
+    )
+    right = left + 1
+
+    weight = (
+        (t - tissue_times[left])
+        / (tissue_times[right] - tissue_times[left])
+    )
+
+    return (
+        (1.0 - weight) * profiles[left]
+        + weight * profiles[right]
     )
 
 
@@ -112,6 +175,13 @@ def solve_cortical_pde(config: SimulationConfig) -> PDEResult:
     time = config.tissue_times
     cohort_table = _cohort_table(config)
 
+    # The prescribed developmental source is constant over z and t.
+    q_over_time = np.full(
+        (len(time), len(z)),
+        fill_value=config.constant_q,
+        dtype=float,
+    )
+
     z_interfaces = np.linspace(
         config.z_min - 0.5 * dz,
         config.z_max + 0.5 * dz,
@@ -130,24 +200,82 @@ def solve_cortical_pde(config: SimulationConfig) -> PDEResult:
         sigma=config.rg_z_sigma,
     )
 
-    velocity_centers: dict[str, np.ndarray] = {}
-    velocity_interfaces: dict[str, np.ndarray] = {}
-    for row in cohort_table.itertuples(index=False):
-        velocity_centers[row.cohort] = stopping_velocity(
-            z,
-            peak_velocity=config.peak_velocity,
-            stopping_point=float(row.stopping_position),
-            deceleration_width=config.deceleration_width,
-        )
-        velocity_interfaces[row.cohort] = stopping_velocity(
-            z_interfaces,
-            peak_velocity=config.peak_velocity,
-            stopping_point=float(row.stopping_position),
-            deceleration_width=config.deceleration_width,
+    stopping_points = cohort_table[
+        "stopping_position"
+    ].to_numpy(dtype=float)
+
+    if len(stopping_points) != len(time) - 1:
+        raise ValueError(
+            "Need exactly one stopping point for every "
+            "post-zero tissue time."
         )
 
-    maximum_velocity = max(
-        float(np.max(np.abs(values))) for values in velocity_interfaces.values()
+    # t=0 is constant across all z.
+    center_profiles = [
+        np.full_like(
+            z,
+            config.peak_velocity,
+            dtype=float,
+        )
+    ]
+    interface_profiles = [
+        np.full_like(
+            z_interfaces,
+            config.peak_velocity,
+            dtype=float,
+        )
+    ]
+
+    # Each later tissue time has a progressively lower stopping point.
+    for stopping_point in stopping_points:
+        center_profiles.append(
+            stopping_velocity(
+                z,
+                peak_velocity=config.peak_velocity,
+                stopping_point=float(stopping_point),
+                deceleration_width=config.deceleration_width,
+            )
+        )
+
+        interface_profiles.append(
+            stopping_velocity(
+                z_interfaces,
+                peak_velocity=config.peak_velocity,
+                stopping_point=float(stopping_point),
+                deceleration_width=config.deceleration_width,
+            )
+        )
+
+    velocity_over_time = np.stack(
+        center_profiles,
+        axis=0,
+    )
+    velocity_interfaces_over_time = np.stack(
+        interface_profiles,
+        axis=0,
+    )
+
+    velocity_stopping_points_over_time = np.concatenate(
+        (
+            [np.nan],
+            stopping_points,
+        )
+    )
+
+    # Retain this mapping for compatibility with existing package outputs.
+    velocity_by_cohort = {
+        row.cohort: velocity_over_time[index + 1]
+        for index, row in enumerate(
+            cohort_table.itertuples(index=False)
+        )
+    }
+
+    maximum_velocity = float(
+        np.max(
+            np.abs(
+                velocity_interfaces_over_time
+            )
+        )
     )
     if maximum_velocity <= 0.0:
         raise RuntimeError("The neuronal velocity field is identically zero.")
@@ -174,7 +302,16 @@ def solve_cortical_pde(config: SimulationConfig) -> PDEResult:
     for target_time in time[1:]:
         target_time = float(target_time)
         while current_time < target_time - 1e-14:
-            dt = min(dt_cfl, target_time - current_time)
+            dt = min(
+                dt_cfl,
+                target_time - current_time,
+            )
+
+            step_velocity = _velocity_at_time(
+                current_time + 0.5 * dt,
+                tissue_times=time,
+                profiles=velocity_interfaces_over_time,
+            )
 
             for row in cohort_table.itertuples(index=False):
                 name = row.cohort
@@ -195,14 +332,14 @@ def solve_cortical_pde(config: SimulationConfig) -> PDEResult:
 
                 density_new = _advect_source_step(
                     density,
-                    velocity_interfaces=velocity_interfaces[name],
+                    velocity_interfaces=step_velocity,
                     source=birth_source,
                     dt=dt,
                     dz=dz,
                 )
                 moment_new = _advect_source_step(
                     moment,
-                    velocity_interfaces=velocity_interfaces[name],
+                    velocity_interfaces=step_velocity,
                     source=birth_source * inherited_rho + density * q_value,
                     dt=dt,
                     dz=dz,
@@ -271,7 +408,12 @@ def solve_cortical_pde(config: SimulationConfig) -> PDEResult:
         z=z,
         time=time,
         cohort_table=cohort_table,
-        velocity_by_cohort=velocity_centers,
+        q_over_time=q_over_time,
+        velocity_by_cohort=velocity_by_cohort,
+        velocity_over_time=velocity_over_time,
+        velocity_stopping_points_over_time=(
+            velocity_stopping_points_over_time
+        ),
         density_by_cohort=density_by_cohort,
         moment_by_cohort=moment_by_cohort,
         rho_by_cohort=rho_by_cohort,
@@ -285,3 +427,465 @@ def solve_cortical_pde(config: SimulationConfig) -> PDEResult:
         dt_cfl=dt_cfl,
         dz=dz,
     )
+
+# FLOW_STP_TIME_INDEXED_VELOCITY_V2
+
+# FLOW_STP_ANALYTIC_FIELDS_PDE_BEGIN
+
+
+from dataclasses import MISSING as _DATACLASS_MISSING
+
+from .dynamics import (
+    flow_map as _analytic_flow_map,
+    prescribed_q as _analytic_q,
+    prescribed_rho as _analytic_rho,
+    prescribed_velocity as _analytic_velocity,
+)
+
+
+def _construct_analytic_pde_result(
+    **values,
+):
+    """Construct the installed PDEResult version and attach extra truth."""
+    kwargs = {}
+
+    for (
+        name,
+        field,
+    ) in PDEResult.__dataclass_fields__.items():
+        if name in values:
+            kwargs[name] = values[name]
+
+        elif field.default is not _DATACLASS_MISSING:
+            continue
+
+        elif (
+            field.default_factory
+            is not _DATACLASS_MISSING
+        ):
+            continue
+
+        else:
+            raise RuntimeError(
+                "Analytic solver does not provide "
+                f"required PDEResult field {name!r}."
+            )
+
+    result = PDEResult(**kwargs)
+
+    # Add fields that may not yet be declared by the installed dataclass.
+    for name, value in values.items():
+        if not hasattr(result, name):
+            object.__setattr__(
+                result,
+                name,
+                value,
+            )
+
+    return result
+
+
+def solve_cortical_pde(
+    config: SimulationConfig,
+) -> PDEResult:
+    """Generate density and prescribed analytic F, V, rho, and q fields.
+
+    Cohort densities are conservatively transported using the constant
+    velocity derived from F(a,t)=a+U*t. Developmental rho is prescribed
+    exactly as A*t+B*z*t+C*t^2, rather than reconstructed from a separately
+    transported developmental moment.
+    """
+    config.validate()
+
+    scalar_parameters = {
+        "flow_speed": config.flow_speed,
+        "rho_time_linear": (
+            config.rho_time_linear
+        ),
+        "rho_space_time": (
+            config.rho_space_time
+        ),
+        "rho_time_quadratic": (
+            config.rho_time_quadratic
+        ),
+    }
+
+    for name, value in scalar_parameters.items():
+        if not np.isfinite(value):
+            raise ValueError(
+                f"{name} must be finite."
+            )
+
+    if config.flow_speed <= 0.0:
+        raise ValueError(
+            "flow_speed must be positive."
+        )
+
+    if config.rho_time_linear <= 0.0:
+        raise ValueError(
+            "rho_time_linear must be positive."
+        )
+
+    if config.rho_space_time <= 0.0:
+        raise ValueError(
+            "rho_space_time must be positive."
+        )
+
+    if config.rho_time_quadratic < 0.0:
+        raise ValueError(
+            "rho_time_quadratic must be nonnegative."
+        )
+
+    z = np.linspace(
+        config.z_min,
+        config.z_max,
+        config.n_z,
+    )
+
+    dz = float(
+        z[1] - z[0]
+    )
+
+    time = np.asarray(
+        config.tissue_times,
+        dtype=float,
+    )
+
+    cohort_table = _cohort_table(config)
+
+    z_interfaces = np.linspace(
+        config.z_min - 0.5 * dz,
+        config.z_max + 0.5 * dz,
+        config.n_z + 1,
+    )
+
+    z_interfaces = np.clip(
+        z_interfaces,
+        config.z_min,
+        config.z_max,
+    )
+
+    birth_spatial_profile = _normalized_gaussian(
+        z,
+        center=config.birth_z_center,
+        sigma=config.birth_z_sigma,
+    )
+
+    rg_density_profile = (
+        config.rg_total_mass
+        * _normalized_gaussian(
+            z,
+            center=config.rg_z_center,
+            sigma=config.rg_z_sigma,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Prescribed analytic truth
+    # ------------------------------------------------------------------
+
+    flow_over_time = _analytic_flow_map(
+        z[None, :],
+        time[:, None],
+        config,
+    )
+
+    velocity_over_time = _analytic_velocity(
+        z[None, :],
+        time[:, None],
+        config,
+    )
+
+    rho_over_time = _analytic_rho(
+        z[None, :],
+        time[:, None],
+        config,
+    )
+
+    q_over_time = _analytic_q(
+        z[None, :],
+        time[:, None],
+        config,
+    )
+
+    expected_q = (
+        config.rho_time_linear
+        + config.rho_space_time
+        * z[None, :]
+        + (
+            2.0
+            * config.rho_time_quadratic
+            + config.flow_speed
+            * config.rho_space_time
+        )
+        * time[:, None]
+    )
+
+    if not np.allclose(
+        q_over_time,
+        expected_q,
+    ):
+        raise RuntimeError(
+            "Analytic q failed its identity check."
+        )
+
+    if not np.allclose(
+        rho_over_time[0],
+        0.0,
+    ):
+        raise RuntimeError(
+            "rho must be exactly zero at t=0."
+        )
+
+    if np.any(
+        np.diff(
+            rho_over_time[1:],
+            axis=1,
+        )
+        <= 0.0
+    ):
+        raise RuntimeError(
+            "rho must increase over z at positive times."
+        )
+
+    if np.any(
+        np.diff(
+            rho_over_time,
+            axis=0,
+        )
+        <= 0.0
+    ):
+        raise RuntimeError(
+            "rho must increase over time."
+        )
+
+    rho_maximum = float(
+        np.max(rho_over_time)
+    )
+
+    if rho_maximum > (
+        config.mature_neuron_rho
+        + 1e-12
+    ):
+        raise ValueError(
+            "The prescribed rho exceeds "
+            "mature_neuron_rho. Reduce A, B, or C."
+        )
+
+    # ------------------------------------------------------------------
+    # Conservatively transport cohort densities using V=U
+    # ------------------------------------------------------------------
+
+    velocity_interfaces = np.full(
+        len(z_interfaces),
+        config.flow_speed,
+        dtype=float,
+    )
+
+    dt_cfl = (
+        config.cfl
+        * dz
+        / config.flow_speed
+    )
+
+    cohort_names = list(
+        cohort_table["cohort"]
+    )
+
+    density_state = {
+        name: np.zeros(
+            config.n_z,
+            dtype=float,
+        )
+        for name in cohort_names
+    }
+
+    density_snapshots = {
+        name: []
+        for name in cohort_names
+    }
+
+    def save_snapshot() -> None:
+        for name in cohort_names:
+            density_snapshots[name].append(
+                density_state[name].copy()
+            )
+
+    save_snapshot()
+
+    current_time = float(
+        time[0]
+    )
+    explicit_steps = 0
+
+    for target_time in time[1:]:
+        target_time = float(
+            target_time
+        )
+
+        while (
+            current_time
+            < target_time - 1e-14
+        ):
+            dt = min(
+                dt_cfl,
+                target_time - current_time,
+            )
+
+            for row in (
+                cohort_table
+                .itertuples(index=False)
+            ):
+                name = row.cohort
+
+                birth_rate = (
+                    config.cohort_total_mass
+                    * _gaussian_time_rate(
+                        current_time,
+                        center=float(
+                            row.birth_time
+                        ),
+                        sigma=(
+                            config.birth_time_sigma
+                        ),
+                    )
+                )
+
+                birth_source = (
+                    birth_rate
+                    * birth_spatial_profile
+                )
+
+                density_state[name] = (
+                    _advect_source_step(
+                        density_state[name],
+                        velocity_interfaces=(
+                            velocity_interfaces
+                        ),
+                        source=birth_source,
+                        dt=dt,
+                        dz=dz,
+                    )
+                )
+
+            current_time += dt
+            explicit_steps += 1
+
+        current_time = target_time
+        save_snapshot()
+
+    density_by_cohort = {
+        name: np.asarray(
+            snapshots,
+            dtype=float,
+        )
+        for name, snapshots
+        in density_snapshots.items()
+    }
+
+    # rho is prescribed identically for every cohort.
+    rho_by_cohort = {
+        name: rho_over_time.copy()
+        for name in cohort_names
+    }
+
+    moment_by_cohort = {
+        name: (
+            density_by_cohort[name]
+            * rho_over_time
+        )
+        for name in cohort_names
+    }
+
+    radial_glia_density = np.broadcast_to(
+        rg_density_profile,
+        rho_over_time.shape,
+    ).copy()
+
+    radial_glia_rho = rho_over_time.copy()
+
+    density_total = (
+        radial_glia_density.copy()
+    )
+
+    for name in cohort_names:
+        density_total += (
+            density_by_cohort[name]
+        )
+
+    moment_total = (
+        density_total
+        * rho_over_time
+    )
+
+    # No density weighting or moment division is used to define rho.
+    rho_observed = rho_over_time.copy()
+
+    # rho is analytically defined throughout the entire z domain.
+    rho_support_mask = np.isfinite(
+        rho_observed
+    )
+
+    velocity_by_cohort = {
+        name: (
+            velocity_over_time[0].copy()
+        )
+        for name in cohort_names
+    }
+
+    # Retained only for compatibility with earlier notebook cells.
+    # Stopping points no longer control velocity.
+    velocity_stopping_points_over_time = (
+        np.full(
+            len(time),
+            np.nan,
+            dtype=float,
+        )
+    )
+
+    values = {
+        "z": z,
+        "time": time,
+        "cohort_table": cohort_table,
+        "flow_over_time": flow_over_time,
+        "velocity_over_time": (
+            velocity_over_time
+        ),
+        "velocity_stopping_points_over_time": (
+            velocity_stopping_points_over_time
+        ),
+        "q_over_time": q_over_time,
+        "rho_over_time": rho_over_time,
+        "velocity_by_cohort": (
+            velocity_by_cohort
+        ),
+        "density_by_cohort": (
+            density_by_cohort
+        ),
+        "moment_by_cohort": (
+            moment_by_cohort
+        ),
+        "rho_by_cohort": rho_by_cohort,
+        "radial_glia_density": (
+            radial_glia_density
+        ),
+        "radial_glia_rho": (
+            radial_glia_rho
+        ),
+        "density_total": density_total,
+        "moment_total": moment_total,
+        "rho_observed": rho_observed,
+        "rho_support_mask": (
+            rho_support_mask
+        ),
+        "explicit_steps": explicit_steps,
+        "dt_cfl": dt_cfl,
+        "dz": dz,
+    }
+
+    return _construct_analytic_pde_result(
+        **values
+    )
+
+
+# FLOW_STP_ANALYTIC_FIELDS_PDE_END

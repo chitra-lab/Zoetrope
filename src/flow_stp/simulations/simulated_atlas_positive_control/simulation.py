@@ -39,6 +39,7 @@ class SimulationResult:
     def summary(self) -> dict[str, Any]:
         return {
             "n_timepoints": self.config.n_timepoints,
+            "constant_q": self.config.constant_q,
             "n_cells_per_tissue": self.config.n_cells_per_tissue,
             "total_cells": len(self.atlas.obs),
             "n_genes": len(self.decoder.gene_names),

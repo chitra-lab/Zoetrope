@@ -37,8 +37,17 @@ def save_simulation(
     truth_arrays: dict[str, np.ndarray] = {
         "z": result.pde.z,
         "time": result.pde.time,
+        # FLOW_STP_ANALYTIC_FIELDS_IO_BEGIN
+        "flow_over_time": result.pde.flow_over_time,
+        "rho_over_time": result.pde.rho_over_time,
+        # FLOW_STP_ANALYTIC_FIELDS_IO_END
+        "q_over_time": result.pde.q_over_time,
         "bend_angles_deg": result.config.bend_angles_deg,
         "stopping_points": result.config.stopping_points,
+        "velocity_over_time": result.pde.velocity_over_time,
+        "velocity_stopping_points_over_time": (
+            result.pde.velocity_stopping_points_over_time
+        ),
         "density_total": result.pde.density_total,
         "rho_observed": result.pde.rho_observed,
         "rho_support_mask": result.pde.rho_support_mask,
@@ -65,3 +74,5 @@ def save_simulation(
         json.dump(result.summary(), handle, indent=2, sort_keys=True)
 
     return output
+
+# FLOW_STP_TIME_INDEXED_VELOCITY_V2

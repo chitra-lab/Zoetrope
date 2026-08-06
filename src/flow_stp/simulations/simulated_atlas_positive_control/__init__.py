@@ -45,3 +45,25 @@ __all__ = [
     "solve_cortical_pde",
     "stopping_velocity",
 ]
+
+# FLOW_STP_ANALYTIC_FIELDS_INIT_BEGIN
+
+from .dynamics import (
+    flow_map,
+    prescribed_q,
+    prescribed_rho,
+    prescribed_velocity,
+)
+
+for _analytic_name in (
+    "flow_map",
+    "prescribed_q",
+    "prescribed_rho",
+    "prescribed_velocity",
+):
+    if _analytic_name not in __all__:
+        __all__.append(_analytic_name)
+
+del _analytic_name
+
+# FLOW_STP_ANALYTIC_FIELDS_INIT_END

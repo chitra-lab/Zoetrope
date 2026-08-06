@@ -19,6 +19,10 @@ class SimulationConfig:
     """
 
     n_timepoints: int = 6
+
+    # By default there is one neuronal cohort for every post-zero tissue time.
+    n_neuron_cohorts: int | None = None
+
     n_cells_per_tissue: int = 10_000
     random_seed: int = 101
 
@@ -31,8 +35,18 @@ class SimulationConfig:
     birth_time_start: float = 0.05
     birth_time_end: float = 0.55
 
+    # FLOW_STP_ANALYTIC_FIELDS_CONFIG_BEGIN
+    # F(a,t) = a + flow_speed*t
+    flow_speed: float = 0.2
+
+    # rho(z,t) = A*t + B*z*t + C*t^2
+    rho_time_linear: float = 0.3
+    rho_space_time: float = 0.35
+    rho_time_quadratic: float = 0.2
+    # FLOW_STP_ANALYTIC_FIELDS_CONFIG_END
+
     peak_velocity: float = 2.8
-    deceleration_width: float = 0.06
+    deceleration_width: float = 0.10
     cfl: float = 0.45
 
     n_z: int = 401
@@ -54,6 +68,7 @@ class SimulationConfig:
     rg_rho_rise_duration: float = 0.80
 
     mature_neuron_rho: float = 1.0
+    constant_q: float = 0.98
     neuron_maturation_delay: float = 0.03
     neuron_maturation_duration: float = 0.24
 
@@ -66,6 +81,17 @@ class SimulationConfig:
         """Raise ``ValueError`` when parameters are internally inconsistent."""
         if self.n_timepoints < 2:
             raise ValueError("n_timepoints must be at least 2.")
+
+        if self.cohort_count <= 0:
+            raise ValueError(
+                "n_neuron_cohorts must be positive."
+            )
+
+        if self.cohort_count != self.n_timepoints - 1:
+            raise ValueError(
+                "The time-indexed velocity design requires "
+                "n_neuron_cohorts == n_timepoints - 1."
+            )
         if self.n_cells_per_tissue <= 0:
             raise ValueError("n_cells_per_tissue must be positive.")
         if self.tissue_width <= 0.0 or self.tissue_height <= 0.0:
@@ -102,6 +128,19 @@ class SimulationConfig:
             raise ValueError("neuron_maturation_delay must be nonnegative.")
         if self.neuron_maturation_duration <= 0.0:
             raise ValueError("neuron_maturation_duration must be positive.")
+        if not np.isfinite(self.constant_q) or self.constant_q <= 0.0:
+            raise ValueError("constant_q must be positive.")
+
+        final_constant_q_rho = (
+            self.rg_rho_start
+            + self.constant_q * float(self.tissue_times[-1])
+        )
+        if final_constant_q_rho > self.mature_neuron_rho + 1e-12:
+            raise ValueError(
+                "constant_q is too large: the linear rho trajectory "
+                "would exceed mature_neuron_rho by the final time."
+            )
+
         if self.density_support_fraction < 0.0:
             raise ValueError("density_support_fraction must be nonnegative.")
         if self.genes_per_program <= 0:
@@ -128,11 +167,20 @@ class SimulationConfig:
         return np.linspace(0.0, self.maximum_bend_deg, self.n_timepoints)
 
     @property
+    def cohort_count(self) -> int:
+        """Resolved number of neuronal cohorts."""
+        return (
+            self.n_timepoints - 1
+            if self.n_neuron_cohorts is None
+            else int(self.n_neuron_cohorts)
+        )
+
+    @property
     def stopping_layer_edges(self) -> np.ndarray:
         return np.linspace(
             self.stopping_region_start,
             self.stopping_region_end,
-            self.n_timepoints + 1,
+            self.cohort_count + 1,
         )
 
     @property
@@ -145,7 +193,7 @@ class SimulationConfig:
         return np.linspace(
             self.birth_time_start,
             self.birth_time_end,
-            self.n_timepoints,
+            self.cohort_count,
         )
 
     @property
@@ -154,3 +202,5 @@ class SimulationConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+# FLOW_STP_TIME_INDEXED_VELOCITY_V2

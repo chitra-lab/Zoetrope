@@ -24,6 +24,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timepoints", type=int, default=6)
     parser.add_argument("--max-bend-deg", type=float, default=120.0)
     parser.add_argument("--n-z", type=int, default=401)
+
+    parser.add_argument(
+        "--constant-q",
+        type=float,
+        default=0.98,
+        help=(
+            "Constant developmental source q=d(rho)/dt "
+            "used for all populations and times."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument(
         "--no-expected-mean",
@@ -45,6 +55,7 @@ def main() -> None:
         n_cells_per_tissue=args.cells_per_tissue,
         maximum_bend_deg=args.max_bend_deg,
         n_z=args.n_z,
+        constant_q=args.constant_q,
         random_seed=args.seed,
     )
     result = run_simulation(config)

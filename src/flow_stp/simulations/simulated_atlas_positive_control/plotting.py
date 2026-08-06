@@ -23,16 +23,32 @@ def save_diagnostic_plots(
     paths: list[Path] = []
 
     fig, ax = plt.subplots(figsize=(8.5, 5.3))
-    for row in result.cohort_table.itertuples(index=False):
+
+    for index, tissue_time in enumerate(result.pde.time):
+        stopping_point = (
+            result.pde
+            .velocity_stopping_points_over_time[index]
+        )
+
+        label = (
+            f"t={tissue_time:.2f}: constant"
+            if np.isnan(stopping_point)
+            else (
+                f"t={tissue_time:.2f}: "
+                f"stop={stopping_point:.3f}"
+            )
+        )
+
         ax.plot(
             result.pde.z,
-            result.pde.velocity_by_cohort[row.cohort],
+            result.pde.velocity_over_time[index],
             linewidth=2.0,
-            label=f"{row.cohort}: stop={row.stopping_position:.3f}",
+            label=label,
         )
+
     ax.set_xlabel("Intrinsic cortical coordinate z")
     ax.set_ylabel("Migration velocity")
-    ax.set_title("Smooth stopping velocity programs")
+    ax.set_title("Time-indexed stopping velocity programs")
     ax.grid(alpha=0.25)
     ax.legend(bbox_to_anchor=(1.02, 1.0), loc="upper left")
     fig.tight_layout()
@@ -127,3 +143,5 @@ def save_diagnostic_plots(
     paths.append(path)
 
     return paths
+
+# FLOW_STP_TIME_INDEXED_VELOCITY_V2
