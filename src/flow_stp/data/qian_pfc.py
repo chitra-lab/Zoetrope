@@ -62,7 +62,11 @@ class QianPFCConfig:
     region_column: str = "region"
     sample_column: str = "sample"
     spatial_key: str = "spatial"
-    layer_key_for_counts: Optional[str] = None
+    # Count source:
+    #   "raw" -> /raw/X       (original QC-retained MERFISH counts)
+    #   None  -> /X           (processed/log-normalized expression)
+    #   other -> /layers/<key>
+    layer_key_for_counts: Optional[str] = "raw"
 
     # Annotation columns read directly from each h5ad when available.
     h1_source_columns: tuple[str, ...] = (
@@ -238,8 +242,18 @@ def _get_h5_matrix_object(
     file_handle: h5py.File,
     layer_key: Optional[str] = None,
 ) -> Any:
+    """Return X, raw/X, or a named AnnData layer."""
+
     if layer_key is None:
         return file_handle["X"]
+
+    if layer_key == "raw":
+        if "raw" not in file_handle or "X" not in file_handle["raw"]:
+            raise KeyError(
+                "Raw counts were requested, but this h5ad has no /raw/X."
+            )
+        return file_handle["raw"]["X"]
+
     return file_handle["layers"][layer_key]
 
 
@@ -879,15 +893,23 @@ def load_qian_pfc_for_stage1(
                 path,
                 indices,
                 layer_key=config.layer_key_for_counts,
-            )
-            expression = np.maximum(
-                expression,
-                0,
             ).astype(np.float32, copy=False)
 
-            gene_names_array = np.asarray(
-                adata.var_names
-            ).astype(str)
+            # raw/X owns its own var index. Use it whenever raw
+            # counts are requested so matrix columns and gene names
+            # remain formally aligned.
+            if config.layer_key_for_counts == "raw":
+                if adata.raw is None:
+                    raise ValueError(
+                        f"{path} has no AnnData .raw object."
+                    )
+                gene_names_array = np.asarray(
+                    adata.raw.var_names
+                ).astype(str)
+            else:
+                gene_names_array = np.asarray(
+                    adata.var_names
+                ).astype(str)
 
             if (
                 config.max_genes_for_debug is not None
