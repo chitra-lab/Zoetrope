@@ -1,0 +1,37 @@
+name: Promote selected Stage 1a implementation
+
+on:
+  push:
+    branches:
+      - stage1a-direct-coverage-invariant-v1
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact benchmarked Stage 1a source
+        run: python .github/scripts/apply_stage1a_patch.py
+
+      - name: Syntax-check edited package files
+        run: |
+          python -m py_compile src/flow_stp/stage1/stage1a.py
+          python -m py_compile src/flow_stp/stage1/_stage1a_model_impl.py
+          git diff --check
+
+      - name: Commit promoted Stage 1a and remove temporary bootstrap files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/flow_stp/stage1/stage1a.py src/flow_stp/stage1/_stage1a_model_impl.py
+          git rm .github/scripts/apply_stage1a_patch.py .github/workflows/promote-stage1a.yml
+          git commit -m "Promote direct coverage-invariant Stage 1a"
+          git push origin HEAD:stage1a-direct-coverage-invariant-v1
