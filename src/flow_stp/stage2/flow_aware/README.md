@@ -1,49 +1,13 @@
-# Flow-aware Stage 2 — frozen direct-flow v1
+# Flow-aware Stage 2 — confirmatory direct-flow v2
 
-This directory preserves the direct flow-aware model used in the paired
-identifiability benchmarks. It is a new sibling implementation and does **not**
-replace `flow_stp.stage2.basic`.
+The default implementation matches the recent confirmatory flow-aware model.
 
-The model learns
+- decoder: `B(a) + D(a,R) - D(a,0)`
+- inverse flow: 24-segment monotone PWL `A(z,t)` with 64x64 time MLP
+- material rate: 96x96x96 SiLU MLP with ReLU output
+- native-rate final bias: 0.40
+- integration: 12-point Gauss-Legendre quadrature
+- flow regularization: off by default
+- learning rates: baseline 2e-3, rate 1e-3, decoder 1.5e-3, flow 7.5e-4
 
-\[
-a=A(z,t)=F_t^{-1}(z)
-\]
-
-and
-
-\[
-R(a,t)=\int_0^t \operatorname{softplus}(h_\theta(a,\tau))\,d\tau,
-\]
-
-then decodes expression as
-
-\[
-\log\mu_g(z,t)=B_g(a)+D_g(a,R(a,t))-D_g(a,0).
-\]
-
-Derived Eulerian quantities are
-
-\[
-\rho(z,t)=R(A(z,t),t),\qquad
-V(z,t)=-A_t/A_z,\qquad
-q(z,t)=R_t(A(z,t),t).
-\]
-
-Frozen benchmark defaults:
-- 10 flow segments
-- flow time MLP: 1 → 32 → 32 → 10, tanh
-- baseline MLP: 1 → 64 → 64 → genes, GELU
-- material-rate MLP: 2 → 64 → 64 → 1, SiLU + softplus
-- decoder MLP: 2 → 64 → 64 → genes, GELU
-- 12 midpoint quadrature nodes
-- spatial/temporal flow smoothness weights: 2e-4 / 2e-4
-- training LR: baseline 2e-3, rate 1e-3, decoder 2e-3, flow 1.5e-3
-- gradient clipping: 5.0
-
-Import:
-
-```python
-from flow_stp.stage2.flow_aware import FlowAwareStage2Model
-model = FlowAwareStage2Model(num_genes=2000)
-```
+For the heavier final confirmatory setting use `flow_segments=32` and `r_quadrature=20`.

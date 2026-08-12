@@ -16,8 +16,8 @@ from .model import FlowAwareStage2Model
 class FlowAwareTrainingConfig:
     baseline_lr: float = 2e-3
     rate_lr: float = 1e-3
-    decoder_lr: float = 2e-3
-    flow_lr: float = 1.5e-3
+    decoder_lr: float = 1.5e-3
+    flow_lr: float = 7.5e-4
     grad_clip: float = 5.0
 
     def to_dict(self) -> dict:

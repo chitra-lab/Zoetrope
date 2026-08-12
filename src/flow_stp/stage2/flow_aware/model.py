@@ -5,7 +5,7 @@ This module lives beside, rather than replacing, ``flow_stp.stage2.basic``.
 Model
 -----
     a = A(z,t) = F_t^{-1}(z)
-    R(a,t) = int_0^t softplus(h(a,tau)) d tau
+    R(a,t) = int_0^t ReLU(h(a,tau)) d tau
     rho(z,t) = R(A(z,t),t)
     V(z,t) = -A_t / A_z
     q(z,t) = R_t(A(z,t),t)
@@ -23,12 +23,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Sequence
 
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 
-FROZEN_ARCHITECTURE_VERSION = "direct-flow-v1-2026-08-09"
+FROZEN_ARCHITECTURE_VERSION = "direct-flow-confirmatory-v2-2026-08-12"
 
 
 def _as_col(x: torch.Tensor) -> torch.Tensor:
@@ -78,16 +79,17 @@ def _final_linear(module: nn.Module) -> nn.Linear:
 @dataclass(frozen=True)
 class FlowAwareStage2Config:
     num_genes: int
-    flow_segments: int = 10
-    flow_hidden: tuple[int, int] = (32, 32)
-    baseline_hidden: tuple[int, int] = (64, 64)
-    rate_hidden: tuple[int, int] = (64, 64)
-    decoder_hidden: tuple[int, int] = (64, 64)
+    flow_segments: int = 24
+    flow_hidden: tuple[int, ...] = (64, 64)
+    baseline_hidden: tuple[int, ...] = (64, 64)
+    rate_hidden: tuple[int, ...] = (96, 96, 96)
+    decoder_hidden: tuple[int, ...] = (64, 64)
     r_quadrature: int = 12
-    flow_spatial_smooth: float = 2e-4
-    flow_temporal_smooth: float = 2e-4
+    native_rate_init_bias: float = 0.40
+    flow_spatial_smooth: float = 0.0
+    flow_temporal_smooth: float = 0.0
     flow_smooth_time_points: int = 9
-    rate_floor: float = 1e-5
+    rate_floor: float = 0.0
 
     def __post_init__(self) -> None:
         if self.num_genes <= 0:
@@ -98,6 +100,8 @@ class FlowAwareStage2Config:
             raise ValueError("r_quadrature must be >= 2.")
         if self.flow_smooth_time_points < 3:
             raise ValueError("flow_smooth_time_points must be >= 3.")
+        if self.native_rate_init_bias < 0:
+            raise ValueError("native_rate_init_bias must be nonnegative.")
         if self.rate_floor < 0:
             raise ValueError("rate_floor must be nonnegative.")
 
@@ -107,8 +111,8 @@ class MonotoneInverseFlow(nn.Module):
 
     def __init__(
         self,
-        n_segments: int = 10,
-        hidden: Sequence[int] = (32, 32),
+        n_segments: int = 24,
+        hidden: Sequence[int] = (64, 64),
     ) -> None:
         super().__init__()
         self.n_segments = int(n_segments)
@@ -219,16 +223,17 @@ class FlowAwareStage2Model(nn.Module):
         self,
         num_genes: int,
         *,
-        flow_segments: int = 10,
-        flow_hidden: Sequence[int] = (32, 32),
+        flow_segments: int = 24,
+        flow_hidden: Sequence[int] = (64, 64),
         baseline_hidden: Sequence[int] = (64, 64),
-        rate_hidden: Sequence[int] = (64, 64),
+        rate_hidden: Sequence[int] = (96, 96, 96),
         decoder_hidden: Sequence[int] = (64, 64),
         r_quadrature: int = 12,
-        flow_spatial_smooth: float = 2e-4,
-        flow_temporal_smooth: float = 2e-4,
+        native_rate_init_bias: float = 0.40,
+        flow_spatial_smooth: float = 0.0,
+        flow_temporal_smooth: float = 0.0,
         flow_smooth_time_points: int = 9,
-        rate_floor: float = 1e-5,
+        rate_floor: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -240,6 +245,7 @@ class FlowAwareStage2Model(nn.Module):
             rate_hidden=tuple(int(x) for x in rate_hidden),
             decoder_hidden=tuple(int(x) for x in decoder_hidden),
             r_quadrature=int(r_quadrature),
+            native_rate_init_bias=float(native_rate_init_bias),
             flow_spatial_smooth=float(flow_spatial_smooth),
             flow_temporal_smooth=float(flow_temporal_smooth),
             flow_smooth_time_points=int(flow_smooth_time_points),
@@ -272,14 +278,28 @@ class FlowAwareStage2Model(nn.Module):
         )
 
         decoder_final = _final_linear(self.decoder_net)
-        nn.init.normal_(decoder_final.weight, 0.0, 1e-3)
+        nn.init.normal_(decoder_final.weight, mean=0.0, std=1e-3)
         if decoder_final.bias is not None:
             nn.init.zeros_(decoder_final.bias)
 
-        nodes = (
-            torch.arange(self.config.r_quadrature, dtype=torch.float32) + 0.5
-        ) / self.config.r_quadrature
-        self.register_buffer("quadrature_nodes", nodes)
+        rate_final = _final_linear(self.rate_net)
+        nn.init.normal_(rate_final.weight, mean=0.0, std=1e-3)
+        if rate_final.bias is not None:
+            nn.init.constant_(rate_final.bias, self.config.native_rate_init_bias)
+
+        nodes_np, weights_np = np.polynomial.legendre.leggauss(
+            self.config.r_quadrature
+        )
+        nodes_np = (0.5 * (nodes_np + 1.0)).astype(np.float32)
+        weights_np = (0.5 * weights_np).astype(np.float32)
+        self.register_buffer(
+            "quadrature_nodes",
+            torch.tensor(nodes_np, dtype=torch.float32),
+        )
+        self.register_buffer(
+            "quadrature_weights",
+            torch.tensor(weights_np, dtype=torch.float32),
+        )
 
     def config_dict(self) -> dict:
         return asdict(self.config)
@@ -305,10 +325,8 @@ class FlowAwareStage2Model(nn.Module):
     ) -> torch.Tensor:
         ac = _as_col(a).clamp(0.0, 1.0)
         tc = _as_col(time).clamp(0.0, 1.0)
-        return (
-            F.softplus(self.rate_net(torch.cat((ac, tc), dim=1)))
-            + self.config.rate_floor
-        )
+        raw = self.rate_net(torch.cat((ac, tc), dim=1))
+        return F.relu(raw) + self.config.rate_floor
 
     def material_R(
         self,
@@ -324,12 +342,13 @@ class FlowAwareStage2Model(nn.Module):
         a_rep = ac.expand(n, q)
 
         inp = torch.stack((a_rep, tau), dim=-1).reshape(-1, 2)
-        rate = (
-            F.softplus(self.rate_net(inp)).reshape(n, q)
-            + self.config.rate_floor
-        )
+        rate = F.relu(self.rate_net(inp)).reshape(n, q)
+        if self.config.rate_floor > 0.0:
+            rate = rate + self.config.rate_floor
 
-        return tc * rate.mean(dim=1, keepdim=True)
+        return tc * (
+            rate * self.quadrature_weights[None, :]
+        ).sum(dim=1, keepdim=True)
 
     def raw_decoder(
         self,
@@ -453,6 +472,13 @@ class FlowAwareStage2Model(nn.Module):
         return self.inverse_flow.forward_map(a, time)
 
     def flow_penalty(self) -> torch.Tensor:
+        if (
+            self.config.flow_spatial_smooth == 0.0
+            and self.config.flow_temporal_smooth == 0.0
+        ):
+            parameter = next(self.parameters())
+            return torch.zeros((), device=parameter.device, dtype=parameter.dtype)
+
         device = next(self.parameters()).device
         time_grid = torch.linspace(
             0.0,
