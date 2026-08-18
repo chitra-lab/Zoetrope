@@ -8,6 +8,7 @@ from .coordinate_expression import (
     TruncatedCubicTimeBasis,
     normalize_time,
 )
+from .training import FitHistory, fit_arclength_model
 from .derivatives import ExpressionGrid, evaluate_expression_grid, expression_jvp
 from .registration import RegistrationResult, solve_smooth_registration
 from .trajectory import FlowResult, assign_rho_to_observations, integrate_flow_and_arclength, no_flow_arclength
@@ -23,6 +24,8 @@ __all__ = [
     "TemporalBasisExpressionField",
     "TruncatedCubicTimeBasis",
     "normalize_time",
+    "FitHistory",
+    "fit_arclength_model",
     "ExpressionGrid",
     "expression_jvp",
     "evaluate_expression_grid",
