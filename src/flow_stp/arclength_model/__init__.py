@@ -1,14 +1,38 @@
-"""Independent arclength-model prototype.
+"""Independent registered transcriptomic arclength model."""
 
-This namespace is intentionally separate from ``flow_stp.stage1`` and
-``flow_stp.stage2``.  The arclength model jointly learns an anatomical
-coordinate and a spatiotemporal mean-expression field, then derives
-registration and transcriptomic arclength quantities from that fitted field.
+from .coordinate_expression import (
+    ArclengthConfig,
+    ArclengthModel,
+    SliceCoordinateMaps,
+    TemporalBasisExpressionField,
+    TruncatedCubicTimeBasis,
+    normalize_time,
+)
+from .derivatives import ExpressionGrid, evaluate_expression_grid, expression_jvp
+from .registration import RegistrationResult, solve_smooth_registration
+from .trajectory import FlowResult, assign_rho_to_observations, integrate_flow_and_arclength, no_flow_arclength
+from .diagnostics import coordinate_gradient_summary, flow_summary, registration_summary
 
-Nothing in this package should silently import or reuse the staged Stage 1 / 
-Stage 2 models unless that dependency is made explicit in an experiment.
-"""
+ARCLENGTH_MODEL_VERSION = "arclength-temporal-basis-flow-v1-2026-08-18"
 
-ARCLENGTH_MODEL_VERSION = "arclength-prototype-v0-2026-08-18"
-
-__all__ = ["ARCLENGTH_MODEL_VERSION"]
+__all__ = [
+    "ARCLENGTH_MODEL_VERSION",
+    "ArclengthConfig",
+    "ArclengthModel",
+    "SliceCoordinateMaps",
+    "TemporalBasisExpressionField",
+    "TruncatedCubicTimeBasis",
+    "normalize_time",
+    "ExpressionGrid",
+    "expression_jvp",
+    "evaluate_expression_grid",
+    "RegistrationResult",
+    "solve_smooth_registration",
+    "FlowResult",
+    "integrate_flow_and_arclength",
+    "no_flow_arclength",
+    "assign_rho_to_observations",
+    "coordinate_gradient_summary",
+    "registration_summary",
+    "flow_summary",
+]
