@@ -1,123 +1,163 @@
 # Arclength model
 
-This directory is a **standalone prototype namespace** for the registered transcriptomic arclength formulation. It is intentionally kept separate from the existing `stage1` and `stage2` implementations so that experiments cannot accidentally mix the old staged latent-variable models with the new formulation.
+This directory is a **standalone implementation** of the registered transcriptomic arclength formulation. It is intentionally separate from `stage1` and `stage2`: it does not import the old learned-rho, learned-q, Stage-2 decoder, flow-aware latent accumulation, or Neural-PDE architectures.
 
-## Core idea
+## 1. Learned objects
 
 For tissue `i`, learn a smooth anatomical coordinate
 
 \[
-z = h_i(x,y)
+z=\alpha_i(x,y)
 \]
 
-with the submersion requirement
+with a nonzero-gradient/submersion penalty on the locally gauged coordinate,
 
 \[
-\|\nabla h_i(x,y)\| > 0
+\|\nabla \alpha_i(x,y)\|>0.
 \]
 
-throughout the tissue interior (implemented with a nonzero-gradient penalty plus the existing coordinate gauge/geometry controls).
+The coordinate implementation retains the robust detached affine gauge, learned coverage endpoints, and relative normal-scale variation regularizer used in the Stage-1a geometry, but is implemented independently in this namespace.
 
-Jointly learn a shared spatiotemporal log-mean expression field
+Jointly learn one shared spatiotemporal log-mean expression field
 
 \[
-M(z,t) \in \mathbb{R}^G,
-\qquad
-M_g(z,t)=\log \mu_g(z,t),
+M(z,t)\in\mathbb R^G,\qquad M_g(z,t)=\log\mu_g(z,t).
 \]
 
-with raw counts modeled, initially, by a Poisson likelihood.
-
-The primary learned optimization is therefore
+Counts are modeled by
 
 \[
-(\hat h,\hat M)
-=\arg\min_{h,M}
-\mathcal L_{\mathrm{counts}}
-+\lambda_{\mathrm{sub}}\mathcal L_{\mathrm{submersion}}
-+\lambda_{\mathrm{geom}}\mathcal L_{\mathrm{geometry}}.
+Y_{cg}\sim\operatorname{Poisson}(\exp(M_g(z_c,t_c)+\log L_c)).
 \]
 
-There is **no separately learned Stage-2 latent `rho` decoder** in this model.
+### Temporal basis for M
 
-## Derived quantities
-
-After fitting `h` and `M`, compute
+To keep time interpolation controlled when only a few ages are observed, `M` does **not** use a generic time MLP. It uses the fixed C2 truncated-cubic basis
 
 \[
-M_z=\partial_z M,
-\qquad
-M_t=\partial_t M.
+B(t)=\left[1,t,t^2,t^3,(t-k_1)_+^3,\ldots,(t-k_K)_+^3\right]
 \]
 
-### No-registration arclength
-
-The unregistered instantaneous transcriptomic-change rate is
+with fixed interior knots. A neural network of `z` predicts the gene-by-basis coefficients `C_gk(z)`, so
 
 \[
-q_0(z,t)=\|M_t(z,t)\|_W,
+M_g(z,t)=\beta_g+\sum_k C_{gk}(z)B_k(t).
 \]
 
-and cumulative arclength is
+The learned optimization is
 
 \[
-\rho_0(z,t)=\int_0^t q_0(z,\tau)\,d\tau.
+(\hat\alpha,\hat M)=\arg\min_{\alpha,M}
+\mathcal L_{\rm Poisson}
++\lambda_{\rm sub}\mathcal L_{\rm submersion}
++\lambda_{\rm scale}\mathcal L_{\rm scale}
++\lambda_{\rm coverage}\mathcal L_{\rm coverage}.
 \]
 
-### Smooth registration
+`training.py` provides a minimal tensor-first joint Adam optimizer. Dataset-specific loading remains outside this package.
 
-Optionally solve for a scalar velocity field `V(z,t)` that explains the component of temporal expression change attributable to repositioning along the anatomical axis:
+## 2. Forward-mode derivatives
+
+After fitting, freeze `alpha` and `M`. `derivatives.py` uses `torch.func.jvp` to evaluate
 
 \[
-\hat V
-=\arg\min_V
-\int
-\|M_t+V M_z\|_W^2
-+\lambda_V V^2
-+\lambda_z (\partial_zV)^2
-+\lambda_t (\partial_tV)^2
-\,dz\,dt.
+M_z=\partial_z M,\qquad M_t=\partial_t M
 \]
 
-The residual developmental expression-change vector is
+on a dense `(t,z)` grid. Two JVPs provide the full G-dimensional derivatives without looping over genes.
+
+## 3. Smooth registration
+
+The flow-aware model solves
 
 \[
-r(z,t)=M_t(z,t)+V(z,t)M_z(z,t),
+\hat V=\arg\min_V\int
+\|M_t+VM_z\|_W^2
++\lambda_VV^2
++\lambda_z(\partial_zV)^2
++\lambda_t(\partial_tV)^2\,dz\,dt
 \]
 
-with rate
+subject to
 
 \[
-q(z,t)=\|r(z,t)\|_W.
+V(0,t)=V(1,t)=0.
 \]
 
-The induced flow map is derived from
+Define
 
 \[
-\dot Z(a,t)=V(Z(a,t),t),
-\qquad Z(a,0)=a,
+A=\langle M_z,M_z\rangle_W,\qquad
+B=\langle M_z,M_t\rangle_W.
 \]
 
-and the registered transcriptomic arclength is
+Then
 
 \[
-\rho(a,t)=\int_0^t q(Z(a,\tau),\tau)\,d\tau.
+\|M_t+VM_z\|_W^2
+=\|M_t\|_W^2+2BV+AV^2.
 \]
 
-Thus the core interpretation is:
+After discretization and restriction to interior z nodes, stationarity gives the sparse linear system
 
-> **Developmental progression is cumulative transcriptomic change through time after accounting for expression change explainable by repositioning along the learned anatomical axis.**
+\[
+\left[\operatorname{diag}(A+\lambda_V)
++\lambda_zD_z^TD_z
++\lambda_tD_t^TD_t\right]V=-B.
+\]
 
-## Intended implementation order
+Thus **`-B` is simply the right-hand side created by the cross term** `2 B V`; it is not a separately learned quantity. `registration.py` solves this convex system with `scipy.sparse.linalg.spsolve` or conjugate gradient and inserts exact zero-velocity boundary values.
 
-1. `coordinate_expression.py` — jointly fit tissue coordinate maps `h_i(x,y)` and shared expression field `M(z,t)`.
-2. `derivatives.py` — evaluate `M`, `M_z`, and `M_t` on a dense `(z,t)` grid.
-3. `registration.py` — solve the smooth quadratic registration problem for `V`.
-4. `trajectory.py` — integrate the induced flow and cumulative arclength `rho`.
-5. `diagnostics.py` — geometry, registration, arclength, and held-out biological diagnostics.
+The registered residual expression velocity and its magnitude are
 
-Prototype 1 should always compute the **no-registration** result first. Registration is an optional extension whose value must be demonstrated empirically.
+\[
+r=M_t+VM_z,\qquad q=\|r\|_W.
+\]
 
-## Separation from the staged models
+The no-flow baseline is computed from the same fitted `M`:
 
-This package should not silently depend on `flow_stp.stage1` or `flow_stp.stage2`. Shared low-level utilities may be reused only when the dependency is explicit and does not import staged-model assumptions. In particular, this package should not reuse the old learned `rho`, `q`, decoder, flow-aware latent accumulation, or Neural-PDE architectures.
+\[
+q_0=\|M_t\|_W.
+\]
+
+## 4. Flow and arclength
+
+The registration velocity induces the flow map
+
+\[
+F(a,t)=Z(a,t),\qquad
+\dot Z=V(Z,t),\quad Z(a,0)=a.
+\]
+
+`trajectory.py` integrates the coupled system
+
+\[
+\dot Z=V(Z,t),\qquad
+\dot\rho=q(Z,t),\quad \rho(a,0)=0
+\]
+
+with vectorized RK4. Therefore
+
+\[
+\rho(a,t)=\int_0^t q(F(a,\tau),\tau)\,d\tau.
+\]
+
+An observed `(z,t)` is assigned a reference coordinate `a` by inverting the monotone one-dimensional map `F_t(a)=z`, then receives the corresponding `rho(a,t)`.
+
+## 5. Interpretation
+
+> **Developmental progression is cumulative transcriptomic change through time after accounting for expression change explainable by smooth repositioning along the learned anatomical axis.**
+
+The core pipeline is
+
+```text
+(x,y,t,Y)
+    -> jointly fit alpha_i and M
+    -> JVPs M_z, M_t
+    -> sparse smooth-registration solve for V
+    -> flow F(a,t)
+    -> residual rate q
+    -> registered arclength rho
+```
+
+Always retain the no-flow result `rho_0` as a nested baseline so the value of registration can be tested rather than assumed.
