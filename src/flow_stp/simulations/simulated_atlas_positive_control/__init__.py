@@ -7,6 +7,14 @@ decoder truth, uniform intrinsic cell sampling, and Poisson observations.
 """
 
 from .config import SimulationConfig
+from .comparison_plotting import (
+    plot_bent_tissue_field_comparison,
+    plot_field_comparison,
+    plot_flow_trajectories,
+    plot_metric_by_time_heatmap,
+    plot_metric_grid,
+    save_figure,
+)
 from .decoder import DecoderResult, GENE_PROGRAMS, generate_expression_surfaces
 from .dynamics import (
     neuron_q,
@@ -35,11 +43,17 @@ __all__ = [
     "make_tissue_grid",
     "neuron_q",
     "neuron_rho",
+    "plot_bent_tissue_field_comparison",
+    "plot_field_comparison",
+    "plot_flow_trajectories",
+    "plot_metric_by_time_heatmap",
+    "plot_metric_grid",
     "radial_glia_q",
     "radial_glia_rho",
     "run_simulation",
     "sample_atlas",
     "save_diagnostic_plots",
+    "save_figure",
     "save_simulation",
     "smootherstep",
     "solve_cortical_pde",
