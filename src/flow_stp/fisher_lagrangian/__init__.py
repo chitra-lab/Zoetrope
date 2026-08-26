@@ -18,6 +18,7 @@ from .model import (
     LogMeanExpressionField,
     TissueCoordinateMap,
 )
+from .training import TrainConfig, fit, train_step
 from .trajectory import (
     LagrangianTrajectory,
     integrate_flow_and_rho,
@@ -32,12 +33,15 @@ __all__ = [
     "LagrangianTrajectory",
     "LogMeanExpressionField",
     "TissueCoordinateMap",
+    "TrainConfig",
     "derived_velocity",
     "field_derivatives",
     "fisher_embedding_from_log_mean",
     "fisher_geometry",
+    "fit",
     "integrate_flow_and_rho",
     "local_dynamics",
     "orthogonality_error",
     "rho_at",
+    "train_step",
 ]
