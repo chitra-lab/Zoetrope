@@ -4,7 +4,9 @@ from torch import nn
 from flow_stp.fisher_lagrangian import (
     FisherLagrangianConfig,
     FisherLagrangianModel,
+    FixedBSplineBasis,
     SplineLogMeanExpressionField,
+    TissueCoordinateMap,
     fisher_geometry,
     fit_expression_irls,
     integrate_flow_and_rho,
@@ -61,15 +63,52 @@ def test_lagrangian_rho_accumulates_fisher_speed():
     assert torch.allclose(traj.rho[-1], torch.ones_like(a), atol=1e-4)
 
 
+def test_coordinate_map_is_unbounded_and_has_explicit_offset():
+    torch.manual_seed(0)
+    mapping = TissueCoordinateMap(spatial_dim=2, hidden=(8, 8), activation="silu")
+    xy = torch.randn(16, 2)
+    with torch.no_grad():
+        mapping.offset.fill_(3.0)
+    raw = mapping.raw_coordinate(xy)
+    z = mapping(xy)
+    assert torch.allclose(z - raw, torch.full_like(z, 3.0))
+    assert any((z < 0.0).flatten()) or any((z > 1.0).flatten())
+
+
+def test_unit_speed_linear_coordinate_has_zero_gauge_penalty():
+    model = FisherLagrangianModel(
+        FisherLagrangianConfig(
+            num_tissues=1,
+            num_genes=1,
+            coordinate_hidden=(),
+            coordinate_domain=(-3.0, 3.0),
+        )
+    )
+    linear = model.coordinate_maps[0].raw.net[0]
+    with torch.no_grad():
+        linear.weight.zero_()
+        linear.weight[0, 0] = 1.0
+        model.coordinate_maps[0].offset.zero_()
+    xy = torch.randn(32, 2)
+    tissue = torch.zeros(32, dtype=torch.long)
+    gauge, mean_norm = model.coordinate_gauge_penalty(xy, tissue)
+    assert torch.allclose(gauge, torch.zeros_like(gauge), atol=1e-6)
+    assert torch.allclose(mean_norm, torch.ones_like(mean_norm), atol=1e-6)
+
+
 def test_temporal_spline_is_exactly_anchored_at_reference_time():
     torch.manual_seed(1)
     field = SplineLogMeanExpressionField(
-        3, spatial_basis_dim=6, temporal_basis_dim=3, reference_time=0.0
+        3,
+        spatial_basis_dim=6,
+        temporal_basis_dim=3,
+        reference_time=0.0,
+        coordinate_domain=(-2.0, 2.0),
     )
     with torch.no_grad():
         field.baseline_coeff.normal_()
         field.temporal_coeff.normal_()
-    z = torch.linspace(0.05, 0.95, 7)
+    z = torch.linspace(-1.5, 1.5, 7)
     t = torch.zeros_like(z)
     eta = field(z, t)
     bz = field.spatial_basis(z)
@@ -77,15 +116,27 @@ def test_temporal_spline_is_exactly_anchored_at_reference_time():
     assert torch.allclose(eta, baseline, atol=1e-6)
 
 
+def test_open_bspline_includes_right_endpoint():
+    basis = FixedBSplineBasis(6, degree=3, domain=(-2.0, 3.0))
+    values = basis(torch.tensor([3.0]))
+    expected = torch.zeros_like(values)
+    expected[0, -1] = 1.0
+    assert torch.allclose(values, expected, atol=1e-7)
+
+
 def test_spline_analytic_derivatives_match_finite_difference():
     torch.manual_seed(2)
     field = SplineLogMeanExpressionField(
-        2, spatial_basis_dim=6, temporal_basis_dim=3, reference_time=0.0
+        2,
+        spatial_basis_dim=6,
+        temporal_basis_dim=3,
+        reference_time=0.0,
+        coordinate_domain=(-1.0, 1.0),
     )
     with torch.no_grad():
         field.baseline_coeff.normal_(std=0.2)
         field.temporal_coeff.normal_(std=0.2)
-    z = torch.tensor([0.23, 0.61])
+    z = torch.tensor([-0.23, 0.61])
     t = torch.tensor([0.31, 0.73])
     _, dz, dt = field.log_mean_derivatives(z, t)
     h = 1e-4
@@ -98,10 +149,13 @@ def test_spline_analytic_derivatives_match_finite_difference():
 def test_irls_recovers_simple_poisson_mean_surface():
     torch.manual_seed(3)
     n = 400
-    z = torch.rand(n)
+    z = 2.0 * torch.rand(n) - 1.0
     t = torch.rand(n)
     true_field = SplineLogMeanExpressionField(
-        1, spatial_basis_dim=4, temporal_basis_dim=3
+        1,
+        spatial_basis_dim=4,
+        temporal_basis_dim=3,
+        coordinate_domain=(-1.0, 1.0),
     )
     with torch.no_grad():
         true_field.baseline_coeff.fill_(0.4)
@@ -115,6 +169,7 @@ def test_irls_recovers_simple_poisson_mean_surface():
             num_genes=1,
             spatial_basis_dim=4,
             temporal_basis_dim=3,
+            coordinate_domain=(-1.0, 1.0),
         )
     )
     fit_expression_irls(model, z=z, time=t, counts=counts, max_iter=20)

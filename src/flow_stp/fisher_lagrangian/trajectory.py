@@ -43,9 +43,13 @@ def integrate_flow_and_rho(
     t1: float = 1.0,
     n_steps: int = 128,
     eps: float = 1e-8,
-    clamp_coordinate: bool = True,
 ) -> LagrangianTrajectory:
-    r"""Integrate ``dF/dt=V(F,t)`` and ``d rho/dt=||d Gamma/dt||_I`` with RK4."""
+    r"""Integrate ``dF/dt=V(F,t)`` and Fisher-arclength ``d rho/dt`` with RK4.
+
+    The anatomical coordinate is not intrinsically bounded, so trajectories are
+    never clamped to ``[0,1]``.  The fitted expression field must have spline
+    support over the part of ``z`` visited by trajectories used for inference.
+    """
     if n_steps <= 0:
         raise ValueError("n_steps must be positive")
     if t1 <= t0:
@@ -74,8 +78,6 @@ def integrate_flow_and_rho(
         k4z, k4r = dyn(z + dt * k3z, tk + dt)
         z = z + (dt / 6.0) * (k1z + 2.0 * k2z + 2.0 * k3z + k4z)
         rho = rho + (dt / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r)
-        if clamp_coordinate:
-            z = z.clamp(0.0, 1.0)
         tt = torch.full_like(z, tk + dt)
         vv, qq = local_dynamics(field, z, tt, eps=eps)
         times.append(tt)

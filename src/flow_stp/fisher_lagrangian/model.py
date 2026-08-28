@@ -2,11 +2,14 @@
 
 Only two scientific objects are estimated from the count data:
 
-* tissue-specific neural anatomical coordinates ``z = alpha_i(x,y)``;
+* tissue-specific smooth anatomical coordinates ``z = alpha_i(x,y)``;
 * a shared low-complexity mean-expression state map ``E(z,t)``.
 
-The latter is parameterized on the log-mean scale by fixed cubic spline bases.
-Velocity, flow, expression trajectories, and pseudotime are derived after fit.
+The coordinate gauge is fixed by requiring the tissue-specific neural coordinate
+fields to be approximately unit speed in the native spatial metric.  The
+coordinate itself is unbounded: there is no sigmoid and no intrinsic ``[0,1]``
+spatial domain.  Velocity, flow, expression trajectories, and pseudotime are
+derived after the primary fit.
 """
 from __future__ import annotations
 
@@ -36,7 +39,9 @@ class MLP(nn.Module):
         in_dim: int,
         out_dim: int,
         hidden: Sequence[int],
-        activation: str = "gelu",
+        activation: str = "silu",
+        *,
+        output_bias: bool = True,
     ) -> None:
         super().__init__()
         activations = {
@@ -51,8 +56,9 @@ class MLP(nn.Module):
         dims = [in_dim, *hidden, out_dim]
         layers: list[nn.Module] = []
         for i in range(len(dims) - 1):
-            layers.append(nn.Linear(dims[i], dims[i + 1]))
-            if i < len(dims) - 2:
+            is_output = i == len(dims) - 2
+            layers.append(nn.Linear(dims[i], dims[i + 1], bias=output_bias if is_output else True))
+            if not is_output:
                 layers.append(act())
         self.net = nn.Sequential(*layers)
 
@@ -61,21 +67,37 @@ class MLP(nn.Module):
 
 
 class TissueCoordinateMap(nn.Module):
-    """Smooth tissue-specific map ``(x,y) -> z in (0,1)``."""
+    r"""Tissue-specific smooth map ``alpha_i : R^D -> R``.
+
+    ``alpha_i(x) = S_{theta_i}(x) + b_i``.  The MLP has no output bias so that
+    the scalar ``offset`` is the explicit tissue-specific translation of the
+    common anatomical coordinate.  There is deliberately no output squashing:
+    the Lagrangian coordinate lives in ``R``.
+    """
 
     def __init__(
         self,
         spatial_dim: int = 2,
         hidden: Sequence[int] = (64, 64),
-        activation: str = "gelu",
+        activation: str = "silu",
     ) -> None:
         super().__init__()
-        self.raw = MLP(spatial_dim, 1, hidden, activation)
+        self.raw = MLP(
+            spatial_dim,
+            1,
+            hidden,
+            activation,
+            output_bias=False,
+        )
+        self.offset = nn.Parameter(torch.zeros(()))
 
-    def forward(self, xy: Tensor) -> Tensor:
+    def raw_coordinate(self, xy: Tensor) -> Tensor:
         if xy.ndim != 2:
             raise ValueError(f"Expected [N,D] coordinates, got {tuple(xy.shape)}")
-        return torch.sigmoid(self.raw(xy))
+        return self.raw(xy)
+
+    def forward(self, xy: Tensor) -> Tensor:
+        return self.raw_coordinate(xy) + self.offset
 
 
 class SplineLogMeanExpressionField(nn.Module):
@@ -86,9 +108,14 @@ class SplineLogMeanExpressionField(nn.Module):
     ``eta_g(z,t) = sum_j beta_gj B_j(z)
                     + sum_jk theta_gjk B_j(z) T_k(t)``.
 
-    ``B_j`` are fixed spatial B-splines and the fixed temporal contrasts
-    ``T_k`` satisfy ``T_k(t0)=0``. Therefore the baseline anatomical profile
-    at the reference time is identified exactly by ``beta``.
+    ``B_j`` are fixed cubic B-splines on one common spatial knot sequence and
+    the fixed temporal contrasts ``T_k`` satisfy ``T_k(t0)=0``.  Therefore the
+    baseline anatomical profile at the reference time is identified exactly by
+    ``beta``.
+
+    The finite ``coordinate_domain`` specifies spline support only; it is not a
+    constraint on the anatomical coordinate itself.  It should be chosen to
+    cover the common learned ``z`` support (with suitable padding).
     """
 
     def __init__(
@@ -98,7 +125,7 @@ class SplineLogMeanExpressionField(nn.Module):
         spatial_basis_dim: int = 10,
         temporal_basis_dim: int = 3,
         spline_degree: int = 3,
-        coordinate_domain: tuple[float, float] = (0.0, 1.0),
+        coordinate_domain: tuple[float, float] = (-1.0, 1.0),
         time_domain: tuple[float, float] = (0.0, 1.0),
         reference_time: float = 0.0,
     ) -> None:
@@ -134,6 +161,10 @@ class SplineLogMeanExpressionField(nn.Module):
     @property
     def num_coefficients_per_gene(self) -> int:
         return self.spatial_basis_dim * (1 + self.temporal_basis_dim)
+
+    @property
+    def coordinate_domain(self) -> tuple[float, float]:
+        return self.spatial_basis.domain
 
     def basis_values(self, z: Tensor, time: Tensor) -> tuple[Tensor, Tensor]:
         zc = _as_col(z)
@@ -206,13 +237,14 @@ class FisherLagrangianConfig:
     num_genes: int
     spatial_dim: int = 2
     coordinate_hidden: tuple[int, ...] = (64, 64)
-    coordinate_activation: str = "gelu"
+    coordinate_activation: str = "silu"
     spatial_basis_dim: int = 10
     temporal_basis_dim: int = 3
     spline_degree: int = 3
+    coordinate_domain: tuple[float, float] = (-1.0, 1.0)
     time_domain: tuple[float, float] = (0.0, 1.0)
     reference_time: float = 0.0
-    submersion_floor: float = 1e-3
+    gauge_target: float = 1.0
     geometry_eps: float = 1e-8
 
 
@@ -223,6 +255,8 @@ class FisherLagrangianModel(nn.Module):
         super().__init__()
         if config.num_tissues <= 0:
             raise ValueError("num_tissues must be positive")
+        if config.gauge_target <= 0:
+            raise ValueError("gauge_target must be positive")
         self.config = config
         self.coordinate_maps = nn.ModuleList(
             [
@@ -239,7 +273,7 @@ class FisherLagrangianModel(nn.Module):
             spatial_basis_dim=config.spatial_basis_dim,
             temporal_basis_dim=config.temporal_basis_dim,
             spline_degree=config.spline_degree,
-            coordinate_domain=(0.0, 1.0),
+            coordinate_domain=config.coordinate_domain,
             time_domain=config.time_domain,
             reference_time=config.reference_time,
         )
@@ -299,43 +333,32 @@ class FisherLagrangianModel(nn.Module):
             reduction=reduction,
         )
 
-    def coordinate_geometry_penalties(
+    def coordinate_gauge_penalty(
         self,
         xy: Tensor,
         tissue_index: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        r"""Return submersion and relative-position gauge penalties.
+        r"""Return the unit-speed/eikonal gauge loss and mean gradient norm.
 
-        The relative-position term penalizes
+        The fixed gauge is
 
-        ``R_alpha = grad(alpha)^T H_alpha grad(alpha) / ||grad(alpha)||^3``.
+        ``||grad_x alpha_i|| = gauge_target``
 
-        ``R_alpha=0`` means the gradient magnitude is constant along each
-        gradient streamline. With ``alpha in (0,1)`` this is the constant-speed
-        relative-arclength gauge: equal coordinate increments correspond to equal
-        fractions of physical path length along a streamline.
+        in the common physical coordinate units supplied to the model.  With the
+        default target of one, equal increments of ``z`` have the same local
+        geometric scale in every tissue.  This first-order condition also
+        implies the submersion condition whenever it is satisfied exactly, so no
+        separate submersion or Hessian relative-position penalty is required.
         """
         xy_req = xy.detach().clone().requires_grad_(True)
         z = self.coordinate(xy_req, tissue_index)
         grad = torch.autograd.grad(z.sum(), xy_req, create_graph=True)[0]
-        norm_sq = grad.square().sum(dim=1) + float(self.config.geometry_eps)
-        norm = torch.sqrt(norm_sq)
-        sub = F.relu(self.config.submersion_floor - norm).square().mean()
-
-        h_rows = []
-        for d in range(xy_req.shape[1]):
-            row = torch.autograd.grad(
-                grad[:, d].sum(),
-                xy_req,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            h_rows.append(row)
-        hessian = torch.stack(h_rows, dim=1)
-        quad = torch.einsum("ni,nij,nj->n", grad, hessian, grad)
-        relative_rate = quad / norm_sq.pow(1.5)
-        relative = relative_rate.square().mean()
-        return sub, relative
+        norm = torch.sqrt(
+            grad.square().sum(dim=1) + float(self.config.geometry_eps)
+        )
+        target = float(self.config.gauge_target)
+        eikonal = (norm - target).square().mean()
+        return eikonal, norm.mean()
 
     def loss(
         self,
@@ -345,25 +368,20 @@ class FisherLagrangianModel(nn.Module):
         time: Tensor,
         counts: Tensor,
         log_exposure: Tensor | None = None,
-        submersion_weight: float = 0.0,
-        relative_position_weight: float = 0.0,
+        gauge_weight: float = 0.0,
     ) -> tuple[Tensor, dict[str, Tensor]]:
         out = self.forward(xy, tissue_index, time, log_exposure)
         data = self.poisson_nll(counts, out["log_mu"])
-        if submersion_weight > 0 or relative_position_weight > 0:
-            sub, rel = self.coordinate_geometry_penalties(xy, tissue_index)
+        if gauge_weight > 0:
+            gauge, grad_norm = self.coordinate_gauge_penalty(xy, tissue_index)
         else:
-            sub = data.new_zeros(())
-            rel = data.new_zeros(())
-        total = (
-            data
-            + float(submersion_weight) * sub
-            + float(relative_position_weight) * rel
-        )
+            gauge = data.new_zeros(())
+            grad_norm = data.new_zeros(())
+        total = data + float(gauge_weight) * gauge
         return total, {
             "data_nll": data.detach(),
-            "submersion": sub.detach(),
-            "relative_position": rel.detach(),
+            "gauge_eikonal": gauge.detach(),
+            "mean_coordinate_grad_norm": grad_norm.detach(),
             "z_min": out["z"].min().detach(),
             "z_max": out["z"].max().detach(),
         }

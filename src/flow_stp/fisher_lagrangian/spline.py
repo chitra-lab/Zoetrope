@@ -1,6 +1,6 @@
 """Differentiable fixed spline bases used by the Fisher-Lagrangian model.
 
-The basis functions are fixed; only their coefficients are learned.  This keeps
+The basis functions are fixed; only their coefficients are learned. This keeps
 ``E(z,t)`` low-complexity while retaining differentiability with respect to the
 learned anatomical coordinate ``z``.
 """
@@ -36,7 +36,7 @@ def _open_uniform_knots(
 
 
 def _bspline_basis(x: Tensor, knots: Tensor, degree: int) -> Tensor:
-    """Evaluate all B-splines at scalar inputs ``x`` using Cox-de Boor recursion."""
+    """Evaluate all B-splines at scalar inputs using Cox-de Boor recursion."""
     if x.ndim == 2 and x.shape[1] == 1:
         x = x[:, 0]
     if x.ndim != 1:
@@ -45,8 +45,6 @@ def _bspline_basis(x: Tensor, knots: Tensor, degree: int) -> Tensor:
     values = []
     for i in range(t.numel() - 1):
         mask = (x >= t[i]) & (x < t[i + 1])
-        if i == t.numel() - 2:
-            mask = mask | (x == t[-1])
         values.append(mask.to(x.dtype))
     basis = torch.stack(values, dim=1)
 
@@ -64,6 +62,15 @@ def _bspline_basis(x: Tensor, knots: Tensor, degree: int) -> Tensor:
                 right = (t[i + p + 1] - x) / right_denom * basis[:, i + 1]
             next_basis.append(left + right)
         basis = torch.stack(next_basis, dim=1)
+
+    # Open B-spline convention includes the right boundary in the final basis.
+    # Repeated endpoint knots otherwise make the Cox-de Boor half-open intervals
+    # evaluate to all zeros at x == hi.
+    at_right = x == t[-1]
+    if bool(at_right.any()):
+        basis = basis.clone()
+        basis[at_right] = 0.0
+        basis[at_right, -1] = 1.0
     return basis
 
 
@@ -118,10 +125,10 @@ class AnchoredTemporalSplineBasis(nn.Module):
     """Linearly independent spline contrasts that are exactly zero at ``t0``.
 
     A raw B-spline basis partitions unity, so simply subtracting its value at
-    ``t0`` leaves one redundant contrast.  We remove that gauge by contrasting
+    ``t0`` leaves one redundant contrast. We remove that gauge by contrasting
     each of the first raw basis functions against the final basis function.
-    ``n_basis`` is the number of *active* temporal contrasts; internally one
-    extra raw B-spline is used.
+    ``n_basis`` is the number of active temporal contrasts; internally one extra
+    raw B-spline is used.
     """
 
     def __init__(
