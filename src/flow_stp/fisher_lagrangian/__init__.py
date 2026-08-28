@@ -1,9 +1,4 @@
-"""Fisher-Lagrangian trajectory inference.
-
-Primary learned objects: anatomical coordinate maps and a shared mean-expression
-field. Flow and developmental progress are derived in Poisson Fisher geometry.
-"""
-
+"""Fisher-Lagrangian spatial trajectory inference."""
 from .geometry import (
     FisherGeometryResult,
     derived_velocity,
@@ -16,9 +11,21 @@ from .model import (
     FisherLagrangianConfig,
     FisherLagrangianModel,
     LogMeanExpressionField,
+    SplineLogMeanExpressionField,
     TissueCoordinateMap,
 )
-from .training import TrainConfig, fit, train_step
+from .spline import AnchoredTemporalSplineBasis, FixedBSplineBasis
+from .training import (
+    BlockFitConfig,
+    CoordinateInitConfig,
+    TrainConfig,
+    fit,
+    fit_block_coordinate,
+    fit_expression_irls,
+    initialize_coordinate_maps_from_pca,
+    initialize_expression_from_global_means,
+    train_step,
+)
 from .trajectory import (
     LagrangianTrajectory,
     integrate_flow_and_rho,
@@ -27,11 +34,16 @@ from .trajectory import (
 )
 
 __all__ = [
+    "AnchoredTemporalSplineBasis",
+    "BlockFitConfig",
+    "CoordinateInitConfig",
     "FisherGeometryResult",
     "FisherLagrangianConfig",
     "FisherLagrangianModel",
+    "FixedBSplineBasis",
     "LagrangianTrajectory",
     "LogMeanExpressionField",
+    "SplineLogMeanExpressionField",
     "TissueCoordinateMap",
     "TrainConfig",
     "derived_velocity",
@@ -39,6 +51,10 @@ __all__ = [
     "fisher_embedding_from_log_mean",
     "fisher_geometry",
     "fit",
+    "fit_block_coordinate",
+    "fit_expression_irls",
+    "initialize_coordinate_maps_from_pca",
+    "initialize_expression_from_global_means",
     "integrate_flow_and_rho",
     "local_dynamics",
     "orthogonality_error",
