@@ -1,23 +1,16 @@
-"""Fisher geometry and derived registration flow.
-
-For independent Poisson means lambda(z,t), the square-root embedding
-
-    Y(z,t) = 2 * sqrt(lambda(z,t))
-
-turns the Fisher metric into the Euclidean metric. We use automatic
-differentiation to obtain Y_z and Y_t and derive the least-squares anatomical
-registration velocity
-
-    V = -(Y_z^T Y_t) / (Y_z^T Y_z + eps).
-"""
-
+"""Fisher geometry and the derived local expression-persistence flow."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 
-from .model import LogMeanExpressionField, Tensor, _as_col
+from .model import Tensor, _as_col
+
+
+class ExpressionField(Protocol):
+    def __call__(self, z: Tensor, time: Tensor) -> Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -34,19 +27,17 @@ class FisherGeometryResult:
     speed: Tensor
     tangent_energy: Tensor
 
+    @property
+    def observability(self) -> Tensor:
+        """Local Fisher information for displacement along the anatomical axis."""
+        return self.tangent_energy
+
 
 def fisher_embedding_from_log_mean(log_lambda: Tensor) -> Tensor:
-    """Return the exact Poisson Fisher square-root coordinates ``2 sqrt(lambda)``."""
     return 2.0 * torch.exp(0.5 * log_lambda)
 
 
 def _component_derivative(values: Tensor, inputs: Tensor, *, create_graph: bool) -> Tensor:
-    """Differentiate each output feature with respect to one scalar input.
-
-    ``values`` is [N,G] and ``inputs`` is [N,1]. The result is [N,G].
-    Samples are evaluated row-wise by the expression network, so the gradient of
-    the summed g-th output recovers the per-row derivative for feature g.
-    """
     cols = []
     for g in range(values.shape[1]):
         grad = torch.autograd.grad(
@@ -60,61 +51,78 @@ def _component_derivative(values: Tensor, inputs: Tensor, *, create_graph: bool)
 
 
 def field_derivatives(
-    field: LogMeanExpressionField,
+    field: ExpressionField,
     z: Tensor,
     time: Tensor,
     *,
     create_graph: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Evaluate Fisher embedding and its z/time derivatives.
+    """Return ``(log_lambda, Psi, Psi_z, Psi_t)`` in Poisson Fisher coordinates."""
+    derivative_method = getattr(field, "log_mean_derivatives", None)
+    if derivative_method is not None:
+        zc = _as_col(z)
+        tc = _as_col(time)
+        log_lambda, eta_z, eta_t = derivative_method(zc, tc)
+        sqrt_lambda = torch.exp(0.5 * log_lambda)
+        psi = 2.0 * sqrt_lambda
+        psi_z = sqrt_lambda * eta_z
+        psi_t = sqrt_lambda * eta_t
+        return log_lambda, psi, psi_z, psi_t
 
-    Returns ``(log_lambda, Y, Y_z, Y_t)``.
-    """
     zc = _as_col(z).detach().clone().requires_grad_(True)
     tc = _as_col(time).detach().clone().requires_grad_(True)
     if zc.shape[0] != tc.shape[0]:
         raise ValueError("z and time must have matching rows")
-
     log_lambda = field(zc, tc)
-    Y = fisher_embedding_from_log_mean(log_lambda)
-    Y_z = _component_derivative(Y, zc, create_graph=create_graph)
-    Y_t = _component_derivative(Y, tc, create_graph=create_graph)
-    return log_lambda, Y, Y_z, Y_t
+    psi = fisher_embedding_from_log_mean(log_lambda)
+    psi_z = _component_derivative(psi, zc, create_graph=create_graph)
+    psi_t = _component_derivative(psi, tc, create_graph=create_graph)
+    return log_lambda, psi, psi_z, psi_t
 
 
-def derived_velocity(Y_z: Tensor, Y_t: Tensor, *, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
-    """Return Fisher-optimal scalar registration velocity and tangent energy."""
-    if Y_z.shape != Y_t.shape:
-        raise ValueError("Y_z and Y_t must have matching shapes")
-    numerator = (Y_z * Y_t).sum(dim=1, keepdim=True)
-    denominator = Y_z.square().sum(dim=1, keepdim=True)
+def derived_velocity(
+    psi_z: Tensor,
+    psi_t: Tensor,
+    *,
+    eps: float = 1e-8,
+) -> tuple[Tensor, Tensor]:
+    r"""Return the local minimum-expression-change velocity.
+
+    ``V = argmin_v ||Psi_t + v Psi_z||^2`` and therefore
+    ``V = -(Psi_z^T Psi_t)/(Psi_z^T Psi_z)`` where identifiable. ``eps`` is
+    numerical stabilization only; ``Psi_z^T Psi_z`` is returned so weakly
+    identifiable regions remain explicit.
+    """
+    if psi_z.shape != psi_t.shape:
+        raise ValueError("psi_z and psi_t must have matching shapes")
+    numerator = (psi_z * psi_t).sum(dim=1, keepdim=True)
+    denominator = psi_z.square().sum(dim=1, keepdim=True)
     velocity = -numerator / (denominator + float(eps))
     return velocity, denominator
 
 
 def fisher_geometry(
-    field: LogMeanExpressionField,
+    field: ExpressionField,
     z: Tensor,
     time: Tensor,
     *,
     eps: float = 1e-8,
     create_graph: bool = False,
 ) -> FisherGeometryResult:
-    """Evaluate all local Fisher-Lagrangian geometric quantities."""
-    log_lambda, Y, Y_z, Y_t = field_derivatives(
+    log_lambda, psi, psi_z, psi_t = field_derivatives(
         field, z, time, create_graph=create_graph
     )
-    velocity, tangent_energy = derived_velocity(Y_z, Y_t, eps=eps)
-    residual = Y_t + velocity * Y_z
+    velocity, tangent_energy = derived_velocity(psi_z, psi_t, eps=eps)
+    residual = psi_t + velocity * psi_z
     speed = torch.linalg.vector_norm(residual, dim=1, keepdim=True)
     return FisherGeometryResult(
         z=_as_col(z),
         time=_as_col(time),
         log_lambda=log_lambda,
         lambda_=torch.exp(log_lambda),
-        fisher_embedding=Y,
-        dz=Y_z,
-        dt=Y_t,
+        fisher_embedding=psi,
+        dz=psi_z,
+        dt=psi_t,
         velocity=velocity,
         residual=residual,
         speed=speed,
@@ -123,7 +131,6 @@ def fisher_geometry(
 
 
 def orthogonality_error(result: FisherGeometryResult) -> Tensor:
-    """Mean absolute cosine-like residual/tangent inner product diagnostic."""
     inner = (result.residual * result.dz).sum(dim=1)
     denom = (
         torch.linalg.vector_norm(result.residual, dim=1)
