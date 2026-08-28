@@ -1,13 +1,17 @@
-"""Lagrangian integration for the Fisher-Lagrangian model."""
-
+"""Lagrangian integration of anatomical flow and Fisher-arclength pseudotime."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 
 from .geometry import fisher_geometry
-from .model import LogMeanExpressionField, Tensor, _as_col
+from .model import Tensor, _as_col
+
+
+class ExpressionField(Protocol):
+    def __call__(self, z: Tensor, time: Tensor) -> Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -20,19 +24,19 @@ class LagrangianTrajectory:
 
 
 def local_dynamics(
-    field: LogMeanExpressionField,
+    field: ExpressionField,
     z: Tensor,
     time: Tensor,
     *,
     eps: float = 1e-8,
 ) -> tuple[Tensor, Tensor]:
-    """Return ``(V(z,t), q(z,t))`` derived from Fisher geometry."""
+    """Return anatomical velocity and Fisher speed along the expression trajectory."""
     geom = fisher_geometry(field, z, time, eps=eps, create_graph=False)
     return geom.velocity.detach(), geom.speed.detach()
 
 
 def integrate_flow_and_rho(
-    field: LogMeanExpressionField,
+    field: ExpressionField,
     a: Tensor,
     *,
     t0: float = 0.0,
@@ -41,15 +45,7 @@ def integrate_flow_and_rho(
     eps: float = 1e-8,
     clamp_coordinate: bool = True,
 ) -> LagrangianTrajectory:
-    """Integrate material position and cumulative Fisher arclength with RK4.
-
-    The state equations are
-
-        dZ/dt   = V(Z,t)
-        drho/dt = q(Z,t)
-
-    with ``Z(a,t0)=a`` and ``rho(a,t0)=0``.
-    """
+    r"""Integrate ``dF/dt=V(F,t)`` and ``d rho/dt=||d Gamma/dt||_I`` with RK4."""
     if n_steps <= 0:
         raise ValueError("n_steps must be positive")
     if t1 <= t0:
@@ -72,29 +68,22 @@ def integrate_flow_and_rho(
 
     for k in range(n_steps):
         tk = float(t0) + k * dt
-
         k1z, k1r = dyn(z, tk)
         k2z, k2r = dyn(z + 0.5 * dt * k1z, tk + 0.5 * dt)
         k3z, k3r = dyn(z + 0.5 * dt * k2z, tk + 0.5 * dt)
         k4z, k4r = dyn(z + dt * k3z, tk + dt)
-
         z = z + (dt / 6.0) * (k1z + 2.0 * k2z + 2.0 * k3z + k4z)
         rho = rho + (dt / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r)
-
         if clamp_coordinate:
             z = z.clamp(0.0, 1.0)
-
-        tnext = tk + dt
-        tt = torch.full_like(z, tnext)
+        tt = torch.full_like(z, tk + dt)
         vv, qq = local_dynamics(field, z, tt, eps=eps)
-
         times.append(tt)
         positions.append(z.clone())
         rhos.append(rho.clone())
         velocities.append(vv)
         speeds.append(qq)
 
-    # [steps+1, trajectories]
     return LagrangianTrajectory(
         time=torch.cat(times, dim=1).T,
         position=torch.cat(positions, dim=1).T,
@@ -105,22 +94,16 @@ def integrate_flow_and_rho(
 
 
 def rho_at(
-    field: LogMeanExpressionField,
+    field: ExpressionField,
     a: Tensor,
     time: float,
     *,
     n_steps: int = 128,
     eps: float = 1e-8,
 ) -> Tensor:
-    """Convenience function returning accumulated development at one time."""
     if time == 0:
         return torch.zeros_like(_as_col(a))
     traj = integrate_flow_and_rho(
-        field,
-        a,
-        t0=0.0,
-        t1=float(time),
-        n_steps=n_steps,
-        eps=eps,
+        field, a, t0=0.0, t1=float(time), n_steps=n_steps, eps=eps
     )
     return traj.rho[-1][:, None]
