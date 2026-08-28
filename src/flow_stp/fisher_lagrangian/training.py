@@ -2,8 +2,9 @@
 
 Conditional on anatomical coordinates, the spline expression model is a Poisson
 GLM and is fit by damped Newton/IRLS. Conditional on that expression field, the
-neural coordinate maps are updated with Adam. Dynamics never enter the fitting
-objective; they are derived after the primary MLE is fitted.
+tissue-specific coordinate maps are updated with Adam through the Poisson
+likelihood plus the unit-speed/eikonal gauge penalty. Dynamics never enter the
+fitting objective; they are derived after the primary MLE is fitted.
 """
 from __future__ import annotations
 
@@ -21,8 +22,7 @@ class BlockFitConfig:
     coordinate_steps_per_outer: int = 100
     coordinate_learning_rate: float = 1e-3
     coordinate_batch_size: int = 2048
-    submersion_weight: float = 1.0
-    relative_position_weight: float = 1.0
+    gauge_weight: float = 1.0
     grad_clip_norm: float | None = 5.0
     irls_max_iter: int = 25
     irls_tol: float = 1e-6
@@ -35,7 +35,6 @@ class CoordinateInitConfig:
     steps: int = 300
     learning_rate: float = 3e-3
     max_points_per_tissue: int = 10000
-    target_margin: float = 0.05
 
 
 def _poisson_nll_from_design(
@@ -157,15 +156,19 @@ def fit_expression_irls(
     }
 
 
-def _pca_targets(xy: Tensor, *, margin: float, orientation: float) -> Tensor:
+def _pca_targets(xy: Tensor, *, orientation: float) -> Tensor:
+    """Signed unit-speed PCA coordinate in the same units as ``xy``.
+
+    The leading right singular vector has unit Euclidean norm, so projection
+    onto it has spatial gradient norm one.  Unlike the previous initialization,
+    this target is not min-max normalized to ``[0,1]``.
+    """
     centered = xy - xy.mean(dim=0, keepdim=True)
     _, _, vh = torch.linalg.svd(centered, full_matrices=False)
-    projection = centered @ vh[0]
+    direction = vh[0]
     if orientation < 0:
-        projection = -projection
-    lo, hi = projection.min(), projection.max()
-    scaled = (projection - lo) / (hi - lo).clamp_min(1e-12)
-    return margin + (1.0 - 2.0 * margin) * scaled
+        direction = -direction
+    return centered @ direction
 
 
 def initialize_coordinate_maps_from_pca(
@@ -176,7 +179,7 @@ def initialize_coordinate_maps_from_pca(
     orientation_signs: Sequence[float] | None = None,
     config: CoordinateInitConfig = CoordinateInitConfig(),
 ) -> dict[int, float]:
-    """Pretrain each coordinate NN to a simple normalized physical major axis."""
+    """Pretrain each coordinate NN to a signed unit-speed physical major axis."""
     if orientation_signs is None:
         orientation_signs = [1.0] * len(model.coordinate_maps)
     if len(orientation_signs) != len(model.coordinate_maps):
@@ -194,7 +197,6 @@ def initialize_coordinate_maps_from_pca(
             points = points[choose]
         targets = _pca_targets(
             points,
-            margin=float(config.target_margin),
             orientation=float(orientation_signs[idx]),
         )[:, None]
         optimizer = torch.optim.Adam(mapping.parameters(), lr=config.learning_rate)
@@ -215,8 +217,7 @@ def coordinate_train_step(
     batch: Mapping[str, Tensor],
     optimizer: torch.optim.Optimizer,
     *,
-    submersion_weight: float,
-    relative_position_weight: float,
+    gauge_weight: float,
     grad_clip_norm: float | None,
 ) -> dict[str, float]:
     model.train()
@@ -227,8 +228,7 @@ def coordinate_train_step(
         time=batch["time"],
         counts=batch["counts"],
         log_exposure=batch.get("log_exposure"),
-        submersion_weight=submersion_weight,
-        relative_position_weight=relative_position_weight,
+        gauge_weight=gauge_weight,
     )
     loss.backward()
     if grad_clip_norm is not None:
@@ -247,8 +247,7 @@ def train_step(
     batch: Mapping[str, Tensor],
     optimizer: torch.optim.Optimizer,
     *,
-    submersion_weight: float,
-    relative_position_weight: float = 0.0,
+    gauge_weight: float = 1.0,
     grad_clip_norm: float | None = None,
 ) -> dict[str, float]:
     """Backward-compatible single coordinate-network update."""
@@ -256,8 +255,7 @@ def train_step(
         model,
         batch,
         optimizer,
-        submersion_weight=submersion_weight,
-        relative_position_weight=relative_position_weight,
+        gauge_weight=gauge_weight,
         grad_clip_norm=grad_clip_norm,
     )
 
@@ -269,6 +267,20 @@ def _slice_batch(data: Mapping[str, Tensor], indices: Tensor) -> dict[str, Tenso
         if isinstance(value, torch.Tensor) and value.shape[0] == n:
             out[key] = value[indices]
     return out
+
+
+def _check_coordinate_support(model: FisherLagrangianModel, z: Tensor) -> None:
+    """Fail early if learned coordinates leave the fixed spline support."""
+    lo, hi = model.expression_field.coordinate_domain
+    zmin = float(z.min().detach().cpu())
+    zmax = float(z.max().detach().cpu())
+    if zmin < lo or zmax > hi:
+        raise ValueError(
+            "Learned anatomical coordinates fall outside the common spatial "
+            f"B-spline support [{lo:g}, {hi:g}] (observed [{zmin:g}, {zmax:g}]). "
+            "Increase FisherLagrangianConfig.coordinate_domain; do not rescale "
+            "individual tissues independently."
+        )
 
 
 def fit_block_coordinate(
@@ -298,6 +310,7 @@ def fit_block_coordinate(
         model.eval()
         with torch.no_grad():
             z = model.coordinate(data["xy"], data["tissue_index"])
+        _check_coordinate_support(model, z)
         expression_stats = fit_expression_irls(
             model,
             z=z,
@@ -320,8 +333,7 @@ def fit_block_coordinate(
                 model,
                 _slice_batch(data, idx),
                 coordinate_optimizer,
-                submersion_weight=config.submersion_weight,
-                relative_position_weight=config.relative_position_weight,
+                gauge_weight=config.gauge_weight,
                 grad_clip_norm=config.grad_clip_norm,
             )
             for key, value in stats.items():
@@ -341,6 +353,7 @@ def fit_block_coordinate(
     model.eval()
     with torch.no_grad():
         final_z = model.coordinate(data["xy"], data["tissue_index"])
+    _check_coordinate_support(model, final_z)
     final_stats = fit_expression_irls(
         model,
         z=final_z,
