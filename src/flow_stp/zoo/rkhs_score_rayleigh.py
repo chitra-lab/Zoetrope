@@ -93,7 +93,12 @@ class RBFCoordinateMaps(nn.Module):
     def _features(self, coords: Tensor, tissue_id: int) -> Tensor:
         centers = getattr(self, f"centers_{int(tissue_id)}").to(coords)
         bandwidth = getattr(self, f"bandwidth_{int(tissue_id)}").to(coords)
-        sqdist = torch.cdist(coords, centers).square()
+        # Write squared Euclidean distances explicitly instead of using
+        # torch.cdist.  The corrected physical-scale loss differentiates the
+        # coordinate field twice with respect to spatial position, whereas
+        # PyTorch does not implement the second derivative of cdist.
+        delta = coords[:, None, :] - centers[None, :, :]
+        sqdist = delta.square().sum(dim=-1)
         radial = torch.exp(-0.5 * sqdist / bandwidth.square())
         ones = torch.ones((len(coords), 1), device=coords.device, dtype=coords.dtype)
         return torch.cat([radial, coords, ones], dim=1)
