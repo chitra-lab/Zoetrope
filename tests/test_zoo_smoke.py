@@ -1,13 +1,13 @@
 import numpy as np
 import torch
 
-from flow_stp.zoo import prepare_atlas
-from flow_stp.zoo import joint_likelihood_fisher_warp as m1
-from flow_stp.zoo import meanfield_rayleigh_warp as m2
-from flow_stp.zoo import score_rayleigh_warp as m3
-from flow_stp.zoo import independent_register as m5
-from flow_stp.zoo import eigenfield_warp as m6
-from flow_stp.zoo import principal_arclength_warp as m7
+from flow_stp.zoo import METHODS, prepare_atlas
+from flow_stp.zoo import fisher_diffusion as diffusion
+from flow_stp.zoo import geometry_anchored_lowrank as lowrank
+from flow_stp.zoo import multiblock_kernel_pls as pls
+from flow_stp.zoo import multiscale_score_rayleigh as multiscale
+from flow_stp.zoo import rkhs_score_rayleigh as rkhs
+from flow_stp.zoo import score_rayleigh_warp as score
 from flow_stp.zoo.warps import MonotoneWarpFamily
 
 
@@ -19,26 +19,30 @@ def _atlas():
         n = 14
         s = rng.uniform(0.0, 1.0, size=(n, 2)).astype(np.float32)
         z = np.clip(s[:, 0] + 0.15 * s[:, 1], 0.0, 1.0)
-        rate = np.stack([2.0 + 3.0 * z + 0.5 * t, 2.0 + 2.0 * (1.0 - z)], axis=1)
+        rate = np.stack(
+            [
+                2.0 + 3.0 * z + 0.5 * t,
+                2.0 + 2.0 * (1.0 - z),
+            ],
+            axis=1,
+        )
         counts.append(rng.poisson(rate).astype(np.float32))
         xy.append(s)
-    return prepare_atlas(counts_by_slice=counts, spatial_by_slice=xy, times=[0.0, 1.0], gene_names=["g0", "g1"])
-
-
-def _small_mean(cfg):
-    cfg.epochs = 1; cfg.batch_size = 32; cfg.hidden = (8,)
+    return prepare_atlas(
+        counts_by_slice=counts,
+        spatial_by_slice=xy,
+        times=[0.0, 1.0],
+        gene_names=["g0", "g1"],
+    )
 
 
 def _small_geometry(cfg):
-    cfg.epochs = 1; cfg.batch_size = 32; cfg.coord_hidden = (8,); cfg.decoder_hidden = (8,); cfg.print_every = 1; cfg.weights.corrected_scale = 1e-4
-
-
-def _small_joint(cfg):
-    cfg.epochs = 1; cfg.batch_size = 32; cfg.coord_hidden = (8,); cfg.decoder_hidden = (8,); cfg.print_every = 1; cfg.weights.corrected_scale = 1e-4
-
-
-def _small_registration(cfg):
-    cfg.epochs_soft_orientation = 1; cfg.epochs_hard_refine = 1; cfg.batch_size = 32; cfg.decoder_hidden = (8,)
+    cfg.epochs = 1
+    cfg.batch_size = 32
+    cfg.coord_hidden = (8,)
+    cfg.decoder_hidden = (8,)
+    cfg.print_every = 1
+    cfg.weights.corrected_scale = 1e-4
 
 
 def _check(result):
@@ -53,26 +57,68 @@ def test_identity_warp_is_monotone_and_centered():
     z = torch.linspace(0, 1, 20)
     for i in range(3):
         assert torch.all(warps.derivative(z, i) > 0)
-    assert torch.allclose(warps.consensus_gauge_penalty(), torch.tensor(0.0))
+    assert torch.allclose(
+        warps.consensus_gauge_penalty(), torch.tensor(0.0)
+    )
 
 
-def test_ranked_zoo_entrypoints_smoke():
-    atlas = _atlas(); device = torch.device("cpu")
+def test_active_zoo_registry_replaces_retired_methods():
+    assert set(METHODS) == {
+        "score_rayleigh_warp",
+        "multiscale_score_rayleigh",
+        "rkhs_score_rayleigh",
+        "fisher_diffusion",
+        "geometry_anchored_lowrank",
+        "multiblock_kernel_pls",
+    }
 
-    c1 = m1.Config(); _small_mean(c1.mean_field); _small_joint(c1.joint); c1.fisher_batch_size = 32
-    _check(m1.fit(atlas, c1, device=device))
 
-    c2 = m2.Config(); _small_mean(c2.mean_field); _small_geometry(c2.geometry_fit); c2.fisher_batch_size = 32
-    _check(m2.fit(atlas, c2, device=device))
+def test_active_zoo_entrypoints_smoke():
+    atlas = _atlas()
+    device = torch.device("cpu")
 
-    c3 = m3.Config(k_neighbors=5); _small_geometry(c3.geometry_fit)
-    _check(m3.fit(atlas, c3, device=device))
+    c_score = score.Config(k_neighbors=5)
+    _small_geometry(c_score.geometry_fit)
+    _check(score.fit(atlas, c_score, device=device))
 
-    c5 = m5.Config(); _small_mean(c5.mean_field); c5.independent.epochs = 1; c5.independent.batch_size = 32; c5.independent.hidden = (8,); _small_registration(c5.registration); c5.fisher_batch_size = 32
-    _check(m5.fit(atlas, c5, device=device))
+    c_multi = multiscale.Config(k_neighbors=(4, 5), reconstruction_scale=5)
+    _small_geometry(c_multi.geometry_fit)
+    _check(multiscale.fit(atlas, c_multi, device=device))
 
-    c6 = m6.Config(); _small_mean(c6.mean_field); _small_registration(c6.registration); c6.fisher_batch_size = 32; c6.k_neighbors = 5; c6.integration_epochs = 3; c6.regressor_epochs = 2
-    _check(m6.fit(atlas, c6, device=device))
+    c_rkhs = rkhs.Config(
+        k_neighbors=5,
+        n_centers=4,
+        epochs=1,
+        batch_size=32,
+        decoder_hidden=(8,),
+        print_every=1,
+    )
+    c_rkhs.weights.corrected_scale = 1e-4
+    _check(rkhs.fit(atlas, c_rkhs, device=device))
 
-    c7 = m7.Config(); _small_mean(c7.mean_field); _small_registration(c7.registration); c7.fisher_batch_size = 32; c7.k_neighbors = 5; c7.regressor_epochs = 2
-    _check(m7.fit(atlas, c7, device=device))
+    c_diff = diffusion.Config(
+        score_k_neighbors=5,
+        graph_k_neighbors=5,
+        orientation_cells_per_tissue=14,
+    )
+    _check(diffusion.fit(atlas, c_diff, device=device))
+
+    c_lowrank = lowrank.Config(
+        k_neighbors=5,
+        latent_rank=1,
+        basis_cells_per_tissue=14,
+        degree_z=2,
+        degree_t=1,
+        epochs=1,
+        batch_size=32,
+        coord_hidden=(8,),
+        print_every=1,
+    )
+    c_lowrank.weights.corrected_scale = 1e-4
+    _check(lowrank.fit(atlas, c_lowrank, device=device))
+
+    c_pls = pls.Config(
+        n_centers=4,
+        fit_cells_per_tissue=14,
+    )
+    _check(pls.fit(atlas, c_pls, device=device))
