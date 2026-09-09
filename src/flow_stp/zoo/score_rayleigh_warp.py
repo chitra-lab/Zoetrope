@@ -14,7 +14,9 @@ from .trainers import SmoothedGeometryConfig, fit_smoothed_geometry_model
 
 @dataclass
 class Config:
-    k_neighbors: int = 32
+    # k=16 was the most coherent direct-score setting in the first Qian PFC
+    # benchmark and is therefore the reference default for new runs.
+    k_neighbors: int = 16
     ridge: float = 1e-3
     pseudocount: float = 0.5
     geometry_fit: SmoothedGeometryConfig = field(
