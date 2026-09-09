@@ -105,7 +105,8 @@ class RBFCoordinateMaps(nn.Module):
         raw = self.raw_one(coords, tissue_id)
         low = getattr(self, f"gauge_low_{int(tissue_id)}").to(raw)
         high = getattr(self, f"gauge_high_{int(tissue_id)}").to(raw)
-        return (raw - low) / torch.clamp(high - low, min=1e-4)
+        local = (raw - low) / torch.clamp(high - low, min=1e-4)
+        return torch.clamp(local, 0.0, 1.0)
 
     def coverage_intervals(self) -> tuple[Tensor, Tensor]:
         left = self.max_missing_each_end * torch.sigmoid(self.left_logits)
