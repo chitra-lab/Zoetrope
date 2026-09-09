@@ -2,13 +2,13 @@
 
 This folder contains alternative estimators of the **same frozen geometric
 object**: tissue-specific process maps into a common one-dimensional process
-manifold.  The production `flow_stp.stage1.stage1a` implementation remains
+manifold. The production `flow_stp.stage1.stage1a` implementation remains
 outside the zoo.
 
 The first Qian PFC benchmark strongly favored Stage1a and the direct
-score-Rayleigh family.  The older joint-likelihood, neural-mean-field,
+score-Rayleigh family. The older joint-likelihood, neural-mean-field,
 independent-registration, eigenfield-integration, and graph-arclength entry
-points have therefore been removed from the active zoo.  The replacements
+points have therefore been removed from the active zoo. The replacements
 below target the failure modes exposed by that benchmark rather than adding
 more generic latent-variable machinery.
 
@@ -26,6 +26,13 @@ more generic latent-variable machinery.
 `flow_stp.stage1.stage1a` should be evaluated alongside these methods as the
 current production baseline.
 
+The Rayleigh/RKHS methods estimate tissue coverage explicitly. By contrast,
+`fisher_diffusion` and `multiblock_kernel_pls` are deliberately **independently
+quantile-normalized controls**: each tissue is put on its own robust [0,1]
+coordinate after fitting. Their scores therefore test axis recovery, not the
+more general partial-coverage/common-gauge problem. They should not be used as
+evidence that every tissue spans the same biological support.
+
 ## Direct-score Fisher geometry
 
 For a smooth local mean-rate field `M_i(s)`, the independent-Poisson Fisher
@@ -36,15 +43,16 @@ G_i(s) = sum_g M_ig(s) grad log M_ig(s) grad log M_ig(s)^T.
 ```
 
 The score-first estimators approximate `grad log M_ig` directly by weighted
-local linear regression.  The Rayleigh objective aligns `grad z_i` to the top
+local linear regression. The Rayleigh objective aligns `grad z_i` to the top
 Fisher eigenspace without choosing an eigenvector sign, and weights the loss by
 the local eigengap.
 
-The multiscale method repeats this estimate at several `k` values.  It combines
-the sign-free projectors `u_1 u_1^T`, weighting each scale by both its Fisher
-eigengap and its agreement with the principal line estimated at the other
-scales.  This directly targets the neighborhood-size sensitivity seen in the
-first benchmark.
+The direct score-Rayleigh reference now defaults to `k_neighbors=16`, reflecting
+the most coherent setting in the first Qian PFC benchmark. The multiscale
+method repeats the estimate at several `k` values and combines the sign-free
+projectors `u_1 u_1^T`, weighting each scale by both its Fisher eigengap and its
+agreement with the principal line estimated at the other scales. This directly
+targets the neighborhood-size sensitivity seen in the first benchmark.
 
 ## Dynamics-ready low-rank expression model
 
@@ -62,10 +70,10 @@ Y(z,t) ~= mean + B a(z,t).
 ```
 
 The basis `B` is estimated by PCA from local Fisher-flat mean-expression
-estimates.  The latent surface `a(z,t)` is a smooth tensor-product Bernstein
-surface.  The process coordinate is still strongly anchored by the local
+estimates. The latent surface `a(z,t)` is a smooth tensor-product Bernstein
+surface. The process coordinate is still strongly anchored by the local
 score-Rayleigh geometry, so reconstruction is a secondary refinement signal
-rather than a free latent-axis objective.  The learned low-rank surface is also
+rather than a free latent-axis objective. The learned low-rank surface is also
 a natural starting point for downstream estimates of cross-time
 correspondence and Fisher arc length.
 
@@ -73,34 +81,39 @@ correspondence and Fisher arc length.
 
 `fisher_diffusion` builds a spatial KNN graph whose edge cost is much larger
 for motion transverse to the local Fisher principal line than for motion along
-it.  A diffusion eigenfunction then provides a globally integrable scalar
-coordinate.  Unlike the retired eigenfield method, no oriented vector field is
+it. A diffusion eigenfunction then provides a globally integrable scalar
+coordinate. Unlike the retired eigenfield method, no oriented vector field is
 integrated.
 
-`multiblock_kernel_pls` is intentionally simpler.  Each tissue is represented
+`multiblock_kernel_pls` is intentionally simpler. Each tissue is represented
 by fixed RBF spatial features, while all tissues share one Fisher-flat
-expression loading.  The tissue spatial weights are the PLS directions most
+expression loading. The tissue spatial weights are the PLS directions most
 predictive of that common expression component, which fixes orientation
 atlas-wide up to one global sign.
 
 ## Shared distortion model
 
 The Rayleigh methods retain the smooth tissue-specific monotone anatomical
-warps used by the original zoo.  For a common coordinate `z`, tissue `i` has
+warps used by the original zoo. For a common coordinate `z`, tissue `i` has
 
 ```text
 h_i'(z) = exp(delta_i(z)) > 0,
 ```
 
-with a low-order Bernstein expansion for `delta_i`.  Gauge and roughness
+with a low-order Bernstein expansion for `delta_i`. Gauge and roughness
 penalties keep these warps interpretable while allowing partial process
 coverage.
 
+Reference-normalized neural and RKHS coordinate maps are robustly gauged by
+lower/upper quantiles and then clipped to their nominal local [0,1] support
+before the learned tissue coverage interval is applied. This keeps the
+coordinate seen by the expression and warp models consistent for tail cells.
+
 ## Input/output contract
 
-All methods accept an `AtlasData` object.  `prepare_atlas(...)` accepts one
+All methods accept an `AtlasData` object. `prepare_atlas(...)` accepts one
 count matrix and one spatial coordinate matrix per tissue, plus observation
-times and optional gene/tissue names.  It retains raw physical coordinates and,
+times and optional gene/tissue names. It retains raw physical coordinates and,
 by default, uses only an isotropic similarity rescaling for fitting
 coordinates.
 
