@@ -1,7 +1,7 @@
 """Reference-normalized coordinate maps for zoo estimators.
 
 The learned coverage interval [a_i, b_i] should describe the portion of the
-common process axis represented by tissue i.  To make that statement true in
+common process axis represented by tissue i. To make that statement true in
 practice, the tissue-local neural coordinate is put in a detached robust affine
 gauge before applying the learned coverage endpoints.
 """
@@ -19,11 +19,12 @@ class ReferenceNormalizedCoordinateMaps(CoordinateMaps):
     """Coordinate maps with a fixed-within-step robust affine local gauge.
 
     ``gauge_low`` and ``gauge_high`` are refreshed from spatial reference
-    points during optimization.  They are buffers, not parameters: gradients
+    points during optimization. They are buffers, not parameters: gradients
     flow through the raw coordinate field but not through the empirical gauge
-    statistics.  This mirrors the selected Stage-1a strategy and prevents a
-    tissue from using only an arbitrary narrow subinterval of its nominal
-    coverage interval.
+    statistics. The robust affine coordinate is clipped to [0, 1] before the
+    learned tissue coverage interval is applied. This keeps every reported
+    process coordinate inside its nominal support and prevents the warp layer
+    from silently seeing a different (clamped) coordinate for tail cells.
     """
 
     def __init__(self, *args, gauge_eps: float = 1e-4, **kwargs) -> None:
@@ -40,7 +41,8 @@ class ReferenceNormalizedCoordinateMaps(CoordinateMaps):
         low = self.gauge_low[int(tissue_id)].to(raw)
         high = self.gauge_high[int(tissue_id)].to(raw)
         span = torch.clamp(high - low, min=self.gauge_eps)
-        return (raw - low) / span
+        local = (raw - low) / span
+        return torch.clamp(local, 0.0, 1.0)
 
     @torch.no_grad()
     def refresh_gauge_(
@@ -61,9 +63,9 @@ class ReferenceNormalizedCoordinateMaps(CoordinateMaps):
         for tid, coords in enumerate(coords_by_tissue):
             x = coords
             if max_points > 0 and len(x) > int(max_points):
-                # Deterministic spatially agnostic reference subset.  The
-                # atlas preprocessing already uses an isotropic physical
-                # similarity transform, so this only fixes the 1-D gauge.
+                # Deterministic spatially agnostic reference subset. The atlas
+                # preprocessing already uses an isotropic physical similarity
+                # transform, so this only fixes the 1-D gauge.
                 idx = torch.linspace(
                     0,
                     len(x) - 1,
