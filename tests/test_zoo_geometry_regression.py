@@ -26,6 +26,8 @@ def test_reference_gauge_matches_nominal_coverage():
         q = torch.quantile(z, torch.tensor([0.01, 0.99]))
         assert torch.allclose(q[0], left[tid], atol=2e-4, rtol=0.0)
         assert torch.allclose(q[1], right[tid], atol=2e-4, rtol=0.0)
+        assert float(z.min()) >= float(left[tid]) - 1e-6
+        assert float(z.max()) <= float(right[tid]) + 1e-6
 
 
 def test_nontrivial_normalized_warp_is_monotone_and_invertible():
