@@ -1,59 +1,61 @@
 """Experimental Stage-1 estimator zoo.
 
-The frozen geometric estimand is shared across methods; the modules differ only
-in how they estimate the local Fisher geometry, process coordinate, and
-anatomical distortion nuisance.
+The zoo now contains only the surviving direct-score estimator plus targeted
+successors motivated by the first Qian PFC benchmark.  The production
+``flow_stp.stage1.stage1a`` estimator remains outside this package and is not
+duplicated here.
 
-Ranked methods implemented here (the existing ``flow_stp.stage1.stage1a`` is
-rank 4 and is intentionally not duplicated):
+Current zoo estimators:
 
-1. joint_likelihood_fisher_warp
-2. meanfield_rayleigh_warp
-3. score_rayleigh_warp
-5. independent_register
-6. eigenfield_warp
-7. principal_arclength_warp
+- score_rayleigh_warp
+- multiscale_score_rayleigh
+- rkhs_score_rayleigh
+- fisher_diffusion
+- geometry_anchored_lowrank
+- multiblock_kernel_pls
 """
 
 from .common import AtlasData, TissueData, ZooResult, prepare_atlas
-from .joint_likelihood_fisher_warp import Config as JointLikelihoodFisherWarpConfig
-from .joint_likelihood_fisher_warp import fit as fit_joint_likelihood_fisher_warp
-from .meanfield_rayleigh_warp import Config as MeanFieldRayleighWarpConfig
-from .meanfield_rayleigh_warp import fit as fit_meanfield_rayleigh_warp
 from .score_rayleigh_warp import Config as ScoreRayleighWarpConfig
 from .score_rayleigh_warp import fit as fit_score_rayleigh_warp
-from .independent_register import Config as IndependentRegisterConfig
-from .independent_register import fit as fit_independent_register
-from .eigenfield_warp import Config as EigenfieldWarpConfig
-from .eigenfield_warp import fit as fit_eigenfield_warp
-from .principal_arclength_warp import Config as PrincipalArclengthWarpConfig
-from .principal_arclength_warp import fit as fit_principal_arclength_warp
+from .multiscale_score_rayleigh import Config as MultiscaleScoreRayleighConfig
+from .multiscale_score_rayleigh import fit as fit_multiscale_score_rayleigh
+from .rkhs_score_rayleigh import Config as RKHSScoreRayleighConfig
+from .rkhs_score_rayleigh import fit as fit_rkhs_score_rayleigh
+from .fisher_diffusion import Config as FisherDiffusionConfig
+from .fisher_diffusion import fit as fit_fisher_diffusion
+from .geometry_anchored_lowrank import Config as GeometryAnchoredLowRankConfig
+from .geometry_anchored_lowrank import fit as fit_geometry_anchored_lowrank
+from .multiblock_kernel_pls import Config as MultiblockKernelPLSConfig
+from .multiblock_kernel_pls import fit as fit_multiblock_kernel_pls
+
 
 METHODS = {
-    "joint_likelihood_fisher_warp": fit_joint_likelihood_fisher_warp,
-    "meanfield_rayleigh_warp": fit_meanfield_rayleigh_warp,
     "score_rayleigh_warp": fit_score_rayleigh_warp,
-    "independent_register": fit_independent_register,
-    "eigenfield_warp": fit_eigenfield_warp,
-    "principal_arclength_warp": fit_principal_arclength_warp,
+    "multiscale_score_rayleigh": fit_multiscale_score_rayleigh,
+    "rkhs_score_rayleigh": fit_rkhs_score_rayleigh,
+    "fisher_diffusion": fit_fisher_diffusion,
+    "geometry_anchored_lowrank": fit_geometry_anchored_lowrank,
+    "multiblock_kernel_pls": fit_multiblock_kernel_pls,
 }
+
 
 __all__ = [
     "AtlasData",
     "TissueData",
     "ZooResult",
     "prepare_atlas",
-    "JointLikelihoodFisherWarpConfig",
-    "MeanFieldRayleighWarpConfig",
     "ScoreRayleighWarpConfig",
-    "IndependentRegisterConfig",
-    "EigenfieldWarpConfig",
-    "PrincipalArclengthWarpConfig",
-    "fit_joint_likelihood_fisher_warp",
-    "fit_meanfield_rayleigh_warp",
+    "MultiscaleScoreRayleighConfig",
+    "RKHSScoreRayleighConfig",
+    "FisherDiffusionConfig",
+    "GeometryAnchoredLowRankConfig",
+    "MultiblockKernelPLSConfig",
     "fit_score_rayleigh_warp",
-    "fit_independent_register",
-    "fit_eigenfield_warp",
-    "fit_principal_arclength_warp",
+    "fit_multiscale_score_rayleigh",
+    "fit_rkhs_score_rayleigh",
+    "fit_fisher_diffusion",
+    "fit_geometry_anchored_lowrank",
+    "fit_multiblock_kernel_pls",
     "METHODS",
 ]
