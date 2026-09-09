@@ -2,6 +2,8 @@ import numpy as np
 import torch
 
 from flow_stp.zoo.coordinate_maps import ReferenceNormalizedCoordinateMaps
+from flow_stp.zoo.rkhs_score_rayleigh import RBFCoordinateMaps
+from flow_stp.zoo.common import prepare_atlas
 from flow_stp.zoo.warps import MonotoneWarpFamily
 
 
@@ -26,8 +28,33 @@ def test_reference_gauge_matches_nominal_coverage():
         q = torch.quantile(z, torch.tensor([0.01, 0.99]))
         assert torch.allclose(q[0], left[tid], atol=2e-4, rtol=0.0)
         assert torch.allclose(q[1], right[tid], atol=2e-4, rtol=0.0)
-        assert float(z.min()) >= float(left[tid]) - 1e-6
-        assert float(z.max()) <= float(right[tid]) + 1e-6
+        assert float(z.min()) >= float(left[tid].detach()) - 1e-6
+        assert float(z.max()) <= float(right[tid].detach()) + 1e-6
+
+
+def test_rkhs_coordinate_supports_second_spatial_derivatives():
+    rng = np.random.default_rng(3)
+    xy = rng.normal(size=(12, 2)).astype(np.float32)
+    counts = rng.poisson(3.0, size=(12, 2)).astype(np.float32)
+    atlas = prepare_atlas(
+        counts_by_slice=[counts],
+        spatial_by_slice=[xy],
+        times=[0.0],
+        gene_names=["g0", "g1"],
+    )
+    maps = RBFCoordinateMaps(
+        atlas,
+        n_centers=4,
+        max_missing_each_end=0.30,
+        initial_missing=0.01,
+        seed=7,
+    )
+    maps.refresh_gauge_([atlas.tissues[0].coords], max_points=12)
+    x = atlas.tissues[0].coords.detach().clone().requires_grad_(True)
+    z = maps.one(x, 0)
+    grad = torch.autograd.grad(z.sum(), x, create_graph=True)[0]
+    hess_probe = torch.autograd.grad(grad.square().sum(), x)[0]
+    assert torch.isfinite(hess_probe).all()
 
 
 def test_nontrivial_normalized_warp_is_monotone_and_invertible():
