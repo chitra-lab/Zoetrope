@@ -1,61 +1,50 @@
-"""Experimental Stage-1 estimator zoo.
+"""Stage-1 estimator comparison package.
 
-The zoo now contains only the surviving direct-score estimator plus targeted
-successors motivated by the first Qian PFC benchmark.  The production
-``flow_stp.stage1.stage1a`` estimator remains outside this package and is not
-duplicated here.
+After the frozen Qian PFC model-selection sweeps, the active comparison is
+organized around three modeling families in ``zoo.competing_models``:
 
-Current zoo estimators:
+1. production Stage1a;
+2. the Fisher-score/Rayleigh family, including the multiscale robustness variant;
+3. expression-first Fisher principal-curve registration.
 
-- score_rayleigh_warp
-- multiscale_score_rayleigh
-- rkhs_score_rayleigh
-- fisher_diffusion
-- geometry_anchored_lowrank
-- multiblock_kernel_pls
+Historical unsuccessful experimental estimators have been removed from the
+active package.
 """
 
 from .common import AtlasData, TissueData, ZooResult, prepare_atlas
-from .score_rayleigh_warp import Config as ScoreRayleighWarpConfig
-from .score_rayleigh_warp import fit as fit_score_rayleigh_warp
-from .multiscale_score_rayleigh import Config as MultiscaleScoreRayleighConfig
-from .multiscale_score_rayleigh import fit as fit_multiscale_score_rayleigh
-from .rkhs_score_rayleigh import Config as RKHSScoreRayleighConfig
-from .rkhs_score_rayleigh import fit as fit_rkhs_score_rayleigh
-from .fisher_diffusion import Config as FisherDiffusionConfig
-from .fisher_diffusion import fit as fit_fisher_diffusion
-from .geometry_anchored_lowrank import Config as GeometryAnchoredLowRankConfig
-from .geometry_anchored_lowrank import fit as fit_geometry_anchored_lowrank
-from .multiblock_kernel_pls import Config as MultiblockKernelPLSConfig
-from .multiblock_kernel_pls import fit as fit_multiblock_kernel_pls
+from .competing_models import (
+    COMPETING_FAMILIES,
+    CurveRegistrationConfig,
+    MultiscaleScoreRayleighConfig,
+    ScoreRayleighConfig,
+    fit_curve_registration,
+    fit_multiscale_score_rayleigh,
+    fit_score_rayleigh,
+    stage1a,
+)
 
+# Backward-compatible names used by existing benchmark scripts.
+ScoreRayleighWarpConfig = ScoreRayleighConfig
 
 METHODS = {
-    "score_rayleigh_warp": fit_score_rayleigh_warp,
+    "score_rayleigh_warp": fit_score_rayleigh,
     "multiscale_score_rayleigh": fit_multiscale_score_rayleigh,
-    "rkhs_score_rayleigh": fit_rkhs_score_rayleigh,
-    "fisher_diffusion": fit_fisher_diffusion,
-    "geometry_anchored_lowrank": fit_geometry_anchored_lowrank,
-    "multiblock_kernel_pls": fit_multiblock_kernel_pls,
+    "curve_registered_principal": fit_curve_registration,
 }
-
 
 __all__ = [
     "AtlasData",
     "TissueData",
     "ZooResult",
     "prepare_atlas",
+    "ScoreRayleighConfig",
     "ScoreRayleighWarpConfig",
     "MultiscaleScoreRayleighConfig",
-    "RKHSScoreRayleighConfig",
-    "FisherDiffusionConfig",
-    "GeometryAnchoredLowRankConfig",
-    "MultiblockKernelPLSConfig",
-    "fit_score_rayleigh_warp",
+    "CurveRegistrationConfig",
+    "fit_score_rayleigh",
     "fit_multiscale_score_rayleigh",
-    "fit_rkhs_score_rayleigh",
-    "fit_fisher_diffusion",
-    "fit_geometry_anchored_lowrank",
-    "fit_multiblock_kernel_pls",
+    "fit_curve_registration",
+    "stage1a",
+    "COMPETING_FAMILIES",
     "METHODS",
 ]
