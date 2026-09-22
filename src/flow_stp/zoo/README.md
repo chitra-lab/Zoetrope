@@ -1,34 +1,30 @@
 # Stage-1 competing models
 
-The active Stage-1 comparison has been narrowed to three modeling families after the frozen Qian PFC ordering benchmarks.
+The active comparison keeps three conceptually distinct coordinate families and two controlled Stage1a spline-expression variants for the simulation benchmark.
 
-The implementations and family-level documentation now live in [`competing_models/`](./competing_models/).
+## Active comparison
 
-## Surviving families
-
-| family | implementation | idea |
+| family / variant | implementation | purpose |
 |---|---|---|
-| Stage1a | `flow_stp.stage1.stage1a`, exposed through `competing_models/stage1a.py` | jointly learn tissue-specific spatial coordinates and a shared time-dependent expression decoder |
-| Fisher-score / Rayleigh | `competing_models/fisher_score.py` | estimate local Fisher geometry directly from spatial expression scores and fit a coordinate aligned with its leading direction |
-| Fisher principal-curve registration | `competing_models/curve_registration.py` | learn a one-dimensional expression curve in Fisher-flat coordinates, then spatially regularize and register it across tissues |
+| Stage1a NN alpha + NN E | flow_stp.stage1.stage1a | flexible joint baseline |
+| Stage1a NN alpha + spline E, joint | competing_models/stage1a_spline.py | isolate E representation |
+| Stage1a NN alpha + spline E, profiled | competing_models/stage1a_spline.py | isolate optimization strategy |
+| Fisher-score / Rayleigh | competing_models/fisher_score.py | local Fisher geometry -> coordinate |
+| Fisher principal-curve registration | competing_models/curve_registration.py | expression geometry -> registered coordinate |
 
-The multiscale score-Rayleigh estimator is grouped with the Fisher-score family because it changes only the local Fisher-geometry estimator: it combines principal-line estimates across neighborhood scales using eigengap and sign-free cross-scale stability. The downstream Rayleigh coordinate construction is the same.
+The two spline Stage1a variants keep the same scientific estimands as Stage1a. They are not new biological hypotheses.
 
-The production Stage1a implementation remains in `flow_stp.stage1.stage1a` for downstream compatibility. The competing-model namespace exposes it alongside the other two families.
+The multiscale score-Rayleigh estimator remains grouped with the Fisher-score family because it changes only the local Fisher-geometry estimate.
 
 ## Removed experimental estimators
 
-The following exploratory estimators were removed after failing to improve sufficiently on the retained families in the frozen Qian PFC H1 ordering experiments:
+The following exploratory estimators remain retired after the frozen Qian PFC ordering experiments:
 
 - RKHS score-Rayleigh;
 - Fisher diffusion;
 - geometry-anchored low-rank coordinate model;
 - multiblock kernel PLS.
 
-Their benchmark outputs remain experiment artifacts; they are no longer active estimator implementations in the package.
+## Escalation rule
 
-## Shared infrastructure
-
-`common.py`, `fisher.py`, `trainers.py`, `objectives.py`, and the coordinate-map helpers remain shared infrastructure used by the surviving families.
-
-The next model-selection gate should compare the retained coordinates through the same downstream expression-map and dynamics pipeline rather than continue expanding the estimator zoo.
+The simulation benchmark should start with the compact comparison above. More sophisticated expression models, derivative estimators, or dynamical solvers should only be added if the matched simulations reveal a specific algorithmic bottleneck.

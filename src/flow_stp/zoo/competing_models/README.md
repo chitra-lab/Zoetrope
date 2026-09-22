@@ -1,44 +1,47 @@
 # Competing Stage-1 model families
 
-After the Qian PFC model-selection sweeps, three modeling families remain worth carrying into downstream dynamics validation.
+The active comparison keeps three conceptually distinct coordinate families and adds two controlled Stage1a variants for the simulation benchmark.
 
-## 1. Stage1a
+## Stage1a family
 
-`stage1a.py` exposes the production implementation in `flow_stp.stage1.stage1a`. Stage1a jointly learns tissue-specific spatial coordinate maps and a shared time-dependent expression decoder, with submersion, scale-variation, coverage, and nuisance controls.
+stage1a.py exposes the production neural-coordinate / neural-expression model.
 
-The implementation stays in the production `stage1` package because downstream Stage1b code depends on its API; this module is the competing-model namespace entry point.
+stage1a_spline.py keeps the same Stage1a tissue-specific neural coordinate maps, coverage model, submersion penalty, and relative-scale penalty, but swaps the expression decoder for the common tensor-product spline field used by the Fisher-Lagrangian implementation.
 
-## 2. Fisher-score family
+Two spline fitting strategies are available:
 
-`fisher_score.py` contains both surviving direct-score variants:
+- **NN alpha + spline E (joint):** optimize coordinate maps and spline coefficients jointly with AdamW.
+- **NN alpha + spline E (profiled):** solve the conditional Poisson spline problem by IRLS, update the coordinate maps with AdamW, and alternate.
 
-- single-scale score-Rayleigh, using one local neighborhood scale;
-- multiscale score-Rayleigh, combining local Fisher principal-line estimates across several neighborhood scales using eigengap and sign-free cross-scale stability weights.
+The two variants estimate the same scientific objects. Their purpose is to separate expression representation from optimization strategy.
 
-These are treated as one modeling family because the multiscale estimator changes only how local Fisher geometry is estimated; the downstream Rayleigh coordinate model is the same.
+## Fisher-score family
 
-## 3. Fisher principal-curve registration
+fisher_score.py contains the retained direct-score estimators:
 
-`curve_registration.py` implements the expression-first alternative:
+- single-scale score-Rayleigh;
+- multiscale score-Rayleigh, which combines local Fisher principal-line estimates across neighborhood scales.
 
-1. estimate local population mean-expression rates;
-2. transform to Poisson Fisher-flat coordinates `Y = 2 sqrt(M)`;
-3. fit a shared expression PCA basis;
-4. fit a one-dimensional principal curve within each tissue;
-5. spatially regularize the local curve coordinate;
-6. synchronize tissue orientations without H1 labels;
-7. register the curves through monotone tissue-specific warps and a smooth common expression surface.
+These remain one family because they share the same downstream Rayleigh coordinate construction.
 
-Its final coordinate is `z_i = h_i(u_i)`.
+## Fisher principal-curve registration
 
-## Model-selection status
+curve_registration.py is the expression-first alternative: local mean rates -> Fisher-flat coordinates -> shared PCA -> tissue principal curves -> spatial regularization -> orientation synchronization -> monotone registration.
 
-The retained families are intentionally conceptually distinct:
+## Simulation comparison set
 
-- **Stage1a:** joint spatial-coordinate / expression reconstruction;
-- **Fisher-score:** local spatial Fisher geometry -> coordinate;
-- **curve registration:** expression geometry -> principal curve -> registered coordinate.
+The intended first-pass simulation benchmark is:
 
-The previous RKHS, Fisher-diffusion, geometry-anchored low-rank, and multiblock-kernel-PLS experimental estimators were removed after failing to improve sufficiently on the surviving families in the frozen Qian PFC H1 ordering benchmark.
+1. Stage1a NN alpha + NN E;
+2. Stage1a NN alpha + spline E, joint optimization;
+3. Stage1a NN alpha + spline E, profiled/block-coordinate optimization;
+4. Fisher-score / Rayleigh + common downstream E;
+5. Fisher principal-curve registration + common downstream E.
 
-The next selection gate should compare downstream expression-map quality, finite-time flow/correspondence stability, and Fisher progression using the same downstream model wherever possible.
+Oracle-z NN and spline expression fits are diagnostic controls rather than additional coordinate competitors.
+
+More sophisticated models should only be introduced after a concrete algorithmic bottleneck is identified on simulation.
+
+## Removed experimental estimators
+
+The previous RKHS, Fisher-diffusion, geometry-anchored low-rank, and multiblock kernel PLS estimators remain retired after the frozen Qian PFC ordering benchmarks.
