@@ -1,12 +1,12 @@
-"""Spatiotemporal cortical-atlas positive-control simulation.
+"""Current-framework spatiotemporal cortical-atlas positive control.
 
-The package combines intrinsic tissue geometry, progressive block-arc bending,
-smoothly stopping neuronal migration, radial-glia and neuronal developmental
-sources, conservative density/rho-moment transport, the centered-rho bare-bones
-decoder truth, uniform intrinsic cell sampling, and Poisson observations.
+The simulator keeps realistic bent tissue geometry and Poisson sampling while
+generating expression directly from a smooth mean-expression state map E(z,t).
+Velocity, flow, and trajectory progression are derived from E by the current
+Fisher-Lagrangian definitions rather than generated as independent latent
+objects.
 """
 
-from .config import SimulationConfig
 from .comparison_plotting import (
     plot_bent_tissue_field_comparison,
     plot_field_comparison,
@@ -15,69 +15,35 @@ from .comparison_plotting import (
     plot_metric_grid,
     save_figure,
 )
-from .decoder import DecoderResult, GENE_PROGRAMS, generate_expression_surfaces
-from .dynamics import (
-    neuron_q,
-    neuron_rho,
-    radial_glia_q,
-    radial_glia_rho,
-    smootherstep,
-    stopping_velocity,
+from .config import SimulationConfig
+from .geometry import (
+    bend_tissue_coordinates,
+    make_tissue_grid,
+    true_common_coordinate,
 )
-from .geometry import bend_tissue_coordinates, make_tissue_grid
 from .io import save_simulation
-from .pde import PDEResult, solve_cortical_pde
 from .plotting import save_diagnostic_plots
 from .sampling import AtlasSample, sample_atlas
 from .simulation import SimulationResult, run_simulation
+from .truth import TruthResult, generate_truth
 
 __all__ = [
     "AtlasSample",
-    "DecoderResult",
-    "GENE_PROGRAMS",
-    "PDEResult",
     "SimulationConfig",
     "SimulationResult",
+    "TruthResult",
     "bend_tissue_coordinates",
-    "generate_expression_surfaces",
+    "generate_truth",
     "make_tissue_grid",
-    "neuron_q",
-    "neuron_rho",
     "plot_bent_tissue_field_comparison",
     "plot_field_comparison",
     "plot_flow_trajectories",
     "plot_metric_by_time_heatmap",
     "plot_metric_grid",
-    "radial_glia_q",
-    "radial_glia_rho",
     "run_simulation",
     "sample_atlas",
     "save_diagnostic_plots",
     "save_figure",
     "save_simulation",
-    "smootherstep",
-    "solve_cortical_pde",
-    "stopping_velocity",
+    "true_common_coordinate",
 ]
-
-# FLOW_STP_ANALYTIC_FIELDS_INIT_BEGIN
-
-from .dynamics import (
-    flow_map,
-    prescribed_q,
-    prescribed_rho,
-    prescribed_velocity,
-)
-
-for _analytic_name in (
-    "flow_map",
-    "prescribed_q",
-    "prescribed_rho",
-    "prescribed_velocity",
-):
-    if _analytic_name not in __all__:
-        __all__.append(_analytic_name)
-
-del _analytic_name
-
-# FLOW_STP_ANALYTIC_FIELDS_INIT_END

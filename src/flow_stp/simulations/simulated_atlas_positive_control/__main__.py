@@ -1,4 +1,4 @@
-"""Command-line entry point for the positive-control atlas."""
+"""Command-line entry point for the current positive-control atlas."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .simulation import run_simulation
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate the Flow-STP simulated cortical atlas positive control."
+        description="Generate the current Fisher-Lagrangian positive-control atlas."
     )
     parser.add_argument(
         "--output-dir",
@@ -24,21 +24,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timepoints", type=int, default=6)
     parser.add_argument("--max-bend-deg", type=float, default=120.0)
     parser.add_argument("--n-z", type=int, default=401)
-
-    parser.add_argument(
-        "--constant-q",
-        type=float,
-        default=0.98,
-        help=(
-            "Constant developmental source q=d(rho)/dt "
-            "used for all populations and times."
-        ),
-    )
+    parser.add_argument("--flow-speed", type=float, default=0.2)
+    parser.add_argument("--spatial-genes", type=int, default=16)
+    parser.add_argument("--developmental-genes", type=int, default=8)
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument(
         "--no-expected-mean",
         action="store_true",
-        help="Do not write the large expected_mean.csv.gz file.",
+        help="Do not write expected_mean.csv.gz.",
     )
     parser.add_argument(
         "--plots",
@@ -55,7 +48,9 @@ def main() -> None:
         n_cells_per_tissue=args.cells_per_tissue,
         maximum_bend_deg=args.max_bend_deg,
         n_z=args.n_z,
-        constant_q=args.constant_q,
+        flow_speed=args.flow_speed,
+        n_spatial_genes=args.spatial_genes,
+        n_developmental_genes=args.developmental_genes,
         random_seed=args.seed,
     )
     result = run_simulation(config)
