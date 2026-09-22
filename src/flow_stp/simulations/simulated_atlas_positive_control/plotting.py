@@ -1,4 +1,4 @@
-"""Optional diagnostic plots for the simulated atlas."""
+"""Optional diagnostic plots for the current positive-control atlas."""
 
 from __future__ import annotations
 
@@ -15,61 +15,75 @@ def save_diagnostic_plots(
     *,
     gene: str | None = None,
 ) -> list[Path]:
-    """Write velocity, geometry, rho, and Poisson diagnostics as PNG files."""
+    """Write geometry, velocity, progression, and Poisson diagnostics."""
     import matplotlib.pyplot as plt
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
 
-    fig, ax = plt.subplots(figsize=(8.5, 5.3))
-
-    for index, tissue_time in enumerate(result.pde.time):
-        stopping_point = (
-            result.pde
-            .velocity_stopping_points_over_time[index]
-        )
-
-        label = (
-            f"t={tissue_time:.2f}: constant"
-            if np.isnan(stopping_point)
-            else (
-                f"t={tissue_time:.2f}: "
-                f"stop={stopping_point:.3f}"
-            )
-        )
-
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    for index, tissue_time in enumerate(result.truth.time):
         ax.plot(
-            result.pde.z,
-            result.pde.velocity_over_time[index],
+            result.truth.z,
+            result.truth.velocity[index],
             linewidth=2.0,
-            label=label,
+            label=f"t={tissue_time:.2f}",
         )
-
-    ax.set_xlabel("Intrinsic cortical coordinate z")
-    ax.set_ylabel("Migration velocity")
-    ax.set_title("Time-indexed stopping velocity programs")
-    ax.grid(alpha=0.25)
-    ax.legend(bbox_to_anchor=(1.02, 1.0), loc="upper left")
+    ax.axhline(
+        result.config.flow_speed,
+        linestyle="--",
+        linewidth=1.5,
+        label="analytic truth",
+    )
+    ax.set_xlabel("True common coordinate z")
+    ax.set_ylabel("Velocity V(z,t)")
+    ax.set_title("Fisher-Lagrangian velocity truth")
+    ax.legend()
     fig.tight_layout()
-    path = output / "velocity_profiles.png"
+    path = output / "velocity_truth.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)
     paths.append(path)
 
-    fig, ax = plt.subplots(figsize=(8.5, 5.4))
-    heatmap = ax.pcolormesh(
-        result.pde.z,
-        result.pde.time,
-        result.decoder.rho_decoder,
-        shading="auto",
-    )
-    ax.set_xlabel("Intrinsic cortical coordinate z")
-    ax.set_ylabel("Developmental time")
-    ax.set_title("Centered developmental coordinate rho(z,t)")
-    fig.colorbar(heatmap, ax=ax, label="True centered rho")
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    for index in np.linspace(
+        0,
+        len(result.truth.initial_position) - 1,
+        8,
+        dtype=int,
+    ):
+        ax.plot(
+            result.truth.time,
+            result.truth.flow[:, index],
+            linewidth=2.0,
+        )
+    ax.set_xlabel("Developmental time")
+    ax.set_ylabel("Common coordinate")
+    ax.set_title("Ground-truth spatial trajectories F(a,t)")
     fig.tight_layout()
-    path = output / "rho_heatmap.png"
+    path = output / "flow_truth.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    paths.append(path)
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    for index in np.linspace(
+        0,
+        len(result.truth.initial_position) - 1,
+        8,
+        dtype=int,
+    ):
+        ax.plot(
+            result.truth.time,
+            result.truth.rho[:, index],
+            linewidth=2.0,
+        )
+    ax.set_xlabel("Developmental time")
+    ax.set_ylabel("Fisher arclength")
+    ax.set_title("Ground-truth trajectory progression")
+    fig.tight_layout()
+    path = output / "rho_truth.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)
     paths.append(path)
@@ -86,7 +100,7 @@ def save_diagnostic_plots(
         scatter = ax.scatter(
             plot_obs["x_extrinsic"],
             plot_obs["y_extrinsic"],
-            c=plot_obs["z_intrinsic"],
+            c=plot_obs["z_true"],
             s=7,
             alpha=0.65,
         )
@@ -96,11 +110,10 @@ def save_diagnostic_plots(
         ax.set_xlabel("Observed extrinsic x")
         ax.set_ylabel("Observed extrinsic y")
         ax.set_title(
-            f"{tissue_id}: t={result.pde.time[tissue_index]:.2f}, "
+            f"{tissue_id}: t={result.truth.time[tissue_index]:.2f}, "
             f"bend={result.config.bend_angles_deg[tissue_index]:.1f}°"
         )
-        ax.grid(alpha=0.20)
-        fig.colorbar(scatter, ax=ax, label="True intrinsic z")
+        fig.colorbar(scatter, ax=ax, label="True common coordinate z")
         fig.tight_layout()
         path = output / f"geometry_{tissue_id}.png"
         fig.savefig(path, dpi=180)
@@ -108,16 +121,16 @@ def save_diagnostic_plots(
         paths.append(path)
 
     if gene is None:
-        gene = "MIG_01" if "MIG_01" in result.decoder.gene_names else result.decoder.gene_names[0]
-    if gene not in result.decoder.gene_names:
+        gene = result.truth.gene_names[0]
+    if gene not in result.truth.gene_names:
         raise KeyError(f"Unknown gene {gene!r}.")
 
     final_tissue_id = f"tissue_{result.config.n_timepoints - 1:02d}"
     final_obs = result.obs[result.obs["tissue_id"] == final_tissue_id]
     counts = result.counts.loc[final_obs.index, gene].to_numpy()
     means = result.expected_mean.loc[final_obs.index, gene].to_numpy()
-    z = final_obs["z_intrinsic"].to_numpy()
-    edges = np.linspace(0.0, 1.0, 31)
+    z = final_obs["z_true"].to_numpy()
+    edges = np.linspace(result.config.z_min, result.config.z_max, 31)
     centers = 0.5 * (edges[:-1] + edges[1:])
     bins = np.clip(np.digitize(z, edges) - 1, 0, len(centers) - 1)
     count_mean = np.full(len(centers), np.nan)
@@ -131,10 +144,9 @@ def save_diagnostic_plots(
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
     ax.plot(centers, expected_mean, linewidth=2.5, label="Generating mean")
     ax.scatter(centers, count_mean, s=38, label="Binned Poisson counts")
-    ax.set_xlabel("Intrinsic cortical coordinate z")
+    ax.set_xlabel("True common coordinate z")
     ax.set_ylabel(f"{gene} expression")
     ax.set_title(f"{gene}: final-tissue Poisson diagnostic")
-    ax.grid(alpha=0.25)
     ax.legend()
     fig.tight_layout()
     path = output / f"poisson_diagnostic_{gene}.png"
@@ -143,5 +155,3 @@ def save_diagnostic_plots(
     paths.append(path)
 
     return paths
-
-# FLOW_STP_TIME_INDEXED_VELOCITY_V2
