@@ -13,12 +13,7 @@ def bend_tissue_coordinates(
     height: float = 1.0,
     bend_angle_deg: np.ndarray | float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Map intrinsic material coordinates ``(s,z)`` to extrinsic ``(x,y)``.
-
-    At zero bend, ``x=s`` and ``y=z*height``. At nonzero total angle ``theta``,
-    the tissue is mapped to an annular block arc whose mid-depth line retains
-    the original tangential length ``width``.
-    """
+    """Map intrinsic material coordinates (s,z) to extrinsic (x,y)."""
     if width <= 0.0 or height <= 0.0:
         raise ValueError("width and height must be positive.")
 
@@ -50,6 +45,40 @@ def bend_tissue_coordinates(
         y[bent] = radius * np.cos(phi) - radius_midline + 0.5 * height
 
     return x, y
+
+
+def true_common_coordinate(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    width: float,
+    height: float = 1.0,
+    bend_angle_deg: np.ndarray | float,
+) -> np.ndarray:
+    """Recover the exact intrinsic z coordinate from bent tissue coordinates."""
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError("width and height must be positive.")
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    bend_angle_deg = np.asarray(bend_angle_deg, dtype=float)
+    x, y, bend_angle_deg = np.broadcast_arrays(x, y, bend_angle_deg)
+
+    theta = np.deg2rad(bend_angle_deg)
+    straight = np.abs(theta) < 1e-12
+    z = np.empty_like(x, dtype=float)
+    z[straight] = y[straight] / height
+
+    bent = ~straight
+    if np.any(bent):
+        radius_midline = width / theta[bent]
+        radial_distance = np.sqrt(
+            x[bent] ** 2
+            + (y[bent] + radius_midline - 0.5 * height) ** 2
+        )
+        z[bent] = 0.5 + (radial_distance - radius_midline) / height
+
+    return z
 
 
 def make_tissue_grid(
