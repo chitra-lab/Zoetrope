@@ -1,23 +1,19 @@
 """Stage-1 estimator comparison package.
 
-After the frozen Qian PFC model-selection sweeps, the active comparison is
-organized around three modeling families in ``zoo.competing_models``:
-
-1. production Stage1a;
-2. the Fisher-score/Rayleigh family, including the multiscale robustness variant;
-3. expression-first Fisher principal-curve registration.
-
-Historical unsuccessful experimental estimators have been removed from the
-active package.
+The active simulation comparison contains the retained coordinate estimators,
+controlled Stage1a expression variants, and the discrete geometric-atlas
+formulation for gauge-equivariant adjacent-time transport.
 """
 
 from .common import AtlasData, TissueData, ZooResult, prepare_atlas
 from .competing_models import (
     COMPETING_FAMILIES,
     CurveRegistrationConfig,
+    DiscreteGeometricAtlasConfig,
     MultiscaleScoreRayleighConfig,
     ScoreRayleighConfig,
     fit_curve_registration,
+    fit_discrete_geometric_atlas,
     fit_multiscale_score_rayleigh,
     fit_score_rayleigh,
     stage1a,
@@ -30,6 +26,7 @@ METHODS = {
     "score_rayleigh_warp": fit_score_rayleigh,
     "multiscale_score_rayleigh": fit_multiscale_score_rayleigh,
     "curve_registered_principal": fit_curve_registration,
+    "discrete_geometric_atlas": fit_discrete_geometric_atlas,
 }
 
 __all__ = [
@@ -41,9 +38,11 @@ __all__ = [
     "ScoreRayleighWarpConfig",
     "MultiscaleScoreRayleighConfig",
     "CurveRegistrationConfig",
+    "DiscreteGeometricAtlasConfig",
     "fit_score_rayleigh",
     "fit_multiscale_score_rayleigh",
     "fit_curve_registration",
+    "fit_discrete_geometric_atlas",
     "stage1a",
     "COMPETING_FAMILIES",
     "METHODS",

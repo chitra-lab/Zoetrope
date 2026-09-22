@@ -1,8 +1,8 @@
 """Active Stage-1 competitors for simulation and real-data model selection.
 
-The zoo contains three conceptually distinct coordinate families plus two
-Stage1a spline-expression variants that isolate expression representation and
-optimization strategy without changing the scientific estimands.
+The zoo contains the retained coordinate families, controlled Stage1a
+expression variants, and a discrete geometric-atlas formulation that estimates
+adjacent-time transport directly modulo tissue-chart gauge.
 """
 
 from .fisher_score import (
@@ -13,6 +13,13 @@ from .fisher_score import (
 )
 from .curve_registration import Config as CurveRegistrationConfig
 from .curve_registration import fit as fit_curve_registration
+from .discrete_geometric_atlas import (
+    Config as DiscreteGeometricAtlasConfig,
+    AdjacentTransportMap,
+    DiscreteGeometricAtlas,
+    fit as fit_discrete_geometric_atlas,
+    fit_adjacent_transport,
+)
 from .stage1a_spline import (
     Stage1aSplineModelConfig,
     Stage1aSplineJointConfig,
@@ -32,12 +39,16 @@ COMPETING_FAMILIES = {
         "multiscale": fit_multiscale_score_rayleigh,
     },
     "curve_registration": fit_curve_registration,
+    "discrete_geometric_atlas": fit_discrete_geometric_atlas,
 }
 
 __all__ = [
     "ScoreRayleighConfig",
     "MultiscaleScoreRayleighConfig",
     "CurveRegistrationConfig",
+    "DiscreteGeometricAtlasConfig",
+    "AdjacentTransportMap",
+    "DiscreteGeometricAtlas",
     "Stage1aSplineModelConfig",
     "Stage1aSplineJointConfig",
     "Stage1aSplineProfiledConfig",
@@ -45,6 +56,8 @@ __all__ = [
     "fit_score_rayleigh",
     "fit_multiscale_score_rayleigh",
     "fit_curve_registration",
+    "fit_discrete_geometric_atlas",
+    "fit_adjacent_transport",
     "fit_stage1a_spline_joint",
     "fit_stage1a_spline_profiled",
     "stage1a",
