@@ -1,21 +1,68 @@
 # Simulated atlas positive control
 
-This package generates the complete six-time-point spatiotemporal cortical-atlas
-positive control used for the bare-bones Stage 2 decoder.
+This package generates the current Fisher-Lagrangian positive control for the
+spatiotemporal trajectory-inference model.
 
-The default run creates:
+The scientific data-generating process now mirrors the current framework:
 
-- six tissues at evenly spaced developmental times;
-- 10,000 cells per tissue, sampled uniformly in intrinsic `(s, z)` coordinates;
-- progressive block-arc bending from 0 to 120 degrees;
-- six neuronal stopping positions at the centers of equal layers spanning
-  `z in [0.5, 1.0]`;
-- a conservative density and developmental-moment PDE;
-- slowly developing low-rho radial glia and neuronal cohorts converging to a
-  shared mature rho;
-- gene means generated as
-  `B_g(z) + D_raw,g(z, rho) - D_raw,g(z, 0)` on the log scale;
-- independent Poisson count observations.
+1. sample cells in intrinsic tissue coordinates `(s,z)`;
+2. bend each tissue into a different two-dimensional geometry while retaining
+   an exact ground-truth common coordinate map `alpha_i(x,y)=z`;
+3. generate a smooth expression state map `E(z,t)` through Fisher-flat
+   coordinates `Psi=2*sqrt(E)`;
+4. derive `V`, `F`, and trajectory progression `rho` from `E` by the same
+   Fisher-Lagrangian definitions used by the method;
+5. sample independent Poisson transcript counts with mean `E(z,t)`.
+
+There is no separately generated developmental `rho`, `q`, or Stage-2
+expression decoder in the active positive-control path.
+
+## Analytic truth
+
+The default truth contains transported spatial genes
+
+```
+Psi_g(z,t) = b_g + s_g (z-Ut) + A_g phi_g(z-Ut)
+```
+
+and developmental genes
+
+```
+Psi_g(z,t) = b_g + q_g t.
+```
+
+For the transported genes,
+
+```
+partial_t Psi_g = -U partial_z Psi_g,
+```
+
+while developmental genes have zero spatial derivative. Therefore the current
+Fisher-Lagrangian identification rule gives exactly
+
+```
+V(z,t) = U,
+F(a,t) = a + U t.
+```
+
+The only residual Fisher motion along a carried trajectory comes from the
+developmental genes, so
+
+```
+rho_a(t) = t * sqrt(sum_g q_g^2).
+```
+
+The simulator checks these identities internally. The default trajectory truth
+is evaluated only for initial positions whose full paths remain inside the
+observed `z` interval.
+
+## Geometry
+
+Tissues begin as intrinsic rectangles and are progressively bent into annular
+block arcs. The simulator saves the observed two-dimensional coordinates and
+the true intrinsic coordinate `z`. The function `true_common_coordinate`
+analytically inverts the bending transformation and therefore provides exact
+ground truth for evaluating learned coordinate maps.
 
 ## Python API
 
@@ -23,65 +70,26 @@ The default run creates:
 from flow_stp.simulations.simulated_atlas_positive_control import (
     SimulationConfig,
     run_simulation,
-    save_simulation,
 )
 
 result = run_simulation(SimulationConfig())
-save_simulation(result, "simulated_atlas_positive_control")
 
 obs = result.obs
 counts = result.counts
 expected_mean = result.expected_mean
-rho_truth = result.decoder.rho_decoder
+truth = result.truth
 ```
 
-## Reusable model-comparison plots
+Important truth arrays include
 
-`comparison_plotting.py` contains the reusable versions of the PI-facing plots
-used in synthetic confirmatory experiments. They are intentionally model-agnostic:
-future experiments supply metric tables or truth/model fields rather than copying
-notebook-specific plotting code.
-
-```python
-from flow_stp.simulations.simulated_atlas_positive_control import (
-    plot_bent_tissue_field_comparison,
-    plot_field_comparison,
-    plot_flow_trajectories,
-    plot_metric_by_time_heatmap,
-    plot_metric_grid,
-    save_figure,
-)
-```
-
-Available helpers:
-
-- `plot_metric_grid(...)`: PI-facing metric panels; repeated fit seeds become boxplots.
-- `plot_metric_by_time_heatmap(...)`: annotated model-by-time Spearman/RMSE heatmaps.
-- `plot_bent_tissue_field_comparison(...)`: truth/model fields rendered over the progressively bent tissue geometry, suitable for `rho`, `z`, `q`, or other scalar fields.
-- `plot_field_comparison(...)`: side-by-side time-by-`z` fields, such as recovered `V(z,t)`.
-- `plot_flow_trajectories(...)`: selected truth/model `F(a,t)` trajectories.
-- `save_figure(...)`: small shared helper for reproducible PNG output.
-
-The plotting functions use `viridis` by default and return Matplotlib figure/axes
-objects so notebooks can display, further annotate, or save them. They do not fit
-models or impose model-specific calibration; gauge/orientation/scale calibration
-should be performed explicitly by the experiment before plotting.
-
-For example, if `rho_fields` is an ordered mapping from display label to an array
-with shape `[n_timepoints, len(result.pde.z)]`:
-
-```python
-fig, axes = plot_bent_tissue_field_comparison(
-    config=result.config,
-    z_axis=result.pde.z,
-    fields=rho_fields,
-    times=result.pde.time,
-    title="Ground-truth and recovered rho across bent tissue slices",
-    colorbar_label="rho",
-    vmin=0.0,
-    vmax=1.0,
-)
-```
+- `truth.psi`
+- `truth.mean`
+- `truth.psi_z`
+- `truth.psi_t`
+- `truth.velocity`
+- `truth.observability`
+- `truth.flow`
+- `truth.rho`
 
 ## Direct package execution
 
@@ -106,8 +114,25 @@ python -m flow_stp.simulations.simulated_atlas_positive_control \
 - `cell_metadata.csv.gz`
 - `counts.csv.gz`
 - `expected_mean.csv.gz` unless disabled
-- `cohorts.csv`
 - `gene_metadata.csv`
 - `truth_arrays.npz`
 - `config.json`
 - `summary.json`
+
+`truth_arrays.npz` contains
+
+- `z_grid`, `time_grid`, and `initial_position_grid`
+- `psi_true`, `E_true`, `psi_z_true`, and `psi_t_true`
+- `V_true` and `observability_true`
+- `F_true` and `rho_true`
+
+## Reusable comparison plots
+
+`comparison_plotting.py` still contains model-agnostic helpers for truth/model
+field comparisons, trajectory plots, heatmaps, and metric panels. These can be
+used for the upcoming oracle, expression-estimator, and end-to-end coordinate
+benchmarks.
+
+The older PDE, cohort, and centered-rho decoder modules remain in the repository
+for historical compatibility, but they are no longer called by
+`run_simulation`.
