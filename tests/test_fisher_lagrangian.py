@@ -176,3 +176,120 @@ def test_irls_recovers_simple_poisson_mean_surface():
     pred = model.expression_field.mean(z, t).mean()
     empirical = counts.float().mean()
     assert torch.allclose(pred, empirical, atol=0.12, rtol=0.12)
+
+
+class AffineFlowToyField(nn.Module):
+    """Exact variable-flow field with V(z,t)=lambda*z+c and constant rho speed.
+
+    Fisher coordinates are
+        Psi_1 = B + exp(-lambda*t) * (z + c/lambda)
+        Psi_2 = B + q*t.
+
+    Psi_1 is constant along the exact affine flow, while Psi_2 changes
+    orthogonally to the spatial tangent. Therefore the Fisher projection gives
+    V=lambda*z+c exactly and the Fisher arclength speed is q.
+    """
+
+    def __init__(
+        self,
+        *,
+        lam: float = 0.4,
+        c: float = 0.1,
+        q: float = 0.35,
+        baseline: float = 4.0,
+    ):
+        super().__init__()
+        self.lam = float(lam)
+        self.c = float(c)
+        self.q = float(q)
+        self.baseline = float(baseline)
+
+    def forward(self, z, time):
+        if z.ndim == 1:
+            z = z[:, None]
+        if time.ndim == 1:
+            time = time[:, None]
+        lam = self.lam
+        transported = (
+            self.baseline
+            + torch.exp(-lam * time) * (z + self.c / lam)
+        )
+        developmental = self.baseline + self.q * time
+        psi = torch.cat((transported, developmental), dim=1)
+        return torch.log((psi / 2.0).square())
+
+    def exact_flow(self, a, time):
+        lam = self.lam
+        return (
+            (a + self.c / lam) * torch.exp(lam * time)
+            - self.c / lam
+        )
+
+
+def test_rk4_recovers_nonconstant_affine_flow_and_rho():
+    """Validate the trajectory solver independently of E estimation."""
+    field = AffineFlowToyField()
+    a = torch.tensor([0.05, 0.20, 0.40, 0.60], dtype=torch.float64)
+
+    traj = integrate_flow_and_rho(
+        field,
+        a,
+        t0=0.0,
+        t1=1.0,
+        n_steps=32,
+        eps=0.0,
+    )
+
+    times = traj.time[:, 0]
+    exact_position = field.exact_flow(
+        a[None, :],
+        times[:, None],
+    )
+    exact_rho = field.q * times[:, None].expand_as(exact_position)
+
+    assert torch.allclose(
+        traj.position,
+        exact_position,
+        atol=2e-10,
+        rtol=2e-10,
+    )
+    assert torch.allclose(
+        traj.rho,
+        exact_rho,
+        atol=2e-12,
+        rtol=2e-12,
+    )
+
+
+def test_rk4_has_expected_fourth_order_convergence():
+    """Halving the step should reduce affine-flow error by about 16x."""
+    field = AffineFlowToyField()
+    a = torch.tensor([0.05, 0.20, 0.40, 0.60], dtype=torch.float64)
+    exact_final = field.exact_flow(
+        a,
+        torch.tensor(1.0, dtype=a.dtype),
+    )
+
+    errors = []
+    for n_steps in (1, 2, 4, 8):
+        traj = integrate_flow_and_rho(
+            field,
+            a,
+            t0=0.0,
+            t1=1.0,
+            n_steps=n_steps,
+            eps=0.0,
+        )
+        errors.append(
+            float((traj.position[-1] - exact_final).abs().max())
+        )
+
+    assert all(
+        later < earlier
+        for earlier, later in zip(errors[:-1], errors[1:])
+    )
+    ratios = [
+        earlier / later
+        for earlier, later in zip(errors[:-1], errors[1:])
+    ]
+    assert min(ratios[1:]) > 12.0
