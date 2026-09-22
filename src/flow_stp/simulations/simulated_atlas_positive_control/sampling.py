@@ -8,9 +8,8 @@ import numpy as np
 import pandas as pd
 
 from .config import SimulationConfig
-from .decoder import DecoderResult
 from .geometry import bend_tissue_coordinates, sample_intrinsic_coordinates
-from .pde import PDEResult
+from .truth import TruthResult
 
 
 @dataclass(frozen=True)
@@ -30,7 +29,7 @@ def interpolate_time_z(
     query_time: np.ndarray,
     query_z: np.ndarray,
 ) -> np.ndarray:
-    """Bilinearly interpolate ``[time,z,...]`` values at paired cell locations."""
+    """Bilinearly interpolate [time,z,...] values at paired cell locations."""
     values = np.asarray(values, dtype=float)
     time_grid = np.asarray(time_grid, dtype=float)
     z_grid = np.asarray(z_grid, dtype=float)
@@ -76,10 +75,9 @@ def interpolate_time_z(
 
 def sample_atlas(
     config: SimulationConfig,
-    pde: PDEResult,
-    decoder: DecoderResult,
+    truth: TruthResult,
 ) -> AtlasSample:
-    """Sample each tissue uniformly in intrinsic coordinates and draw counts."""
+    """Sample tissues uniformly in intrinsic coordinates and draw Poisson counts."""
     config.validate()
     rng = np.random.default_rng(config.random_seed)
     n_total = config.total_cells
@@ -105,27 +103,13 @@ def sample_atlas(
     )
 
     expected_mean = interpolate_time_z(
-        decoder.mean,
-        time_grid=pde.time,
-        z_grid=pde.z,
+        truth.mean,
+        time_grid=truth.time,
+        z_grid=truth.z,
         query_time=cell_time,
         query_z=z_intrinsic,
     )
     expected_mean = np.maximum(expected_mean, 0.0)
-    rho_decoder_true = interpolate_time_z(
-        decoder.rho_decoder,
-        time_grid=pde.time,
-        z_grid=pde.z,
-        query_time=cell_time,
-        query_z=z_intrinsic,
-    )
-    rho_absolute_true = interpolate_time_z(
-        decoder.rho_absolute,
-        time_grid=pde.time,
-        z_grid=pde.z,
-        query_time=cell_time,
-        query_z=z_intrinsic,
-    )
     counts = rng.poisson(expected_mean).astype(np.int32, copy=False)
 
     cell_ids = np.asarray(
@@ -141,6 +125,9 @@ def sample_atlas(
         dtype=object,
     )
 
+    initial_position_true = z_intrinsic - config.flow_speed * cell_time
+    rho_true = truth.developmental_speed * cell_time
+
     obs = pd.DataFrame(
         {
             "cell_id": cell_ids,
@@ -149,23 +136,24 @@ def sample_atlas(
             "time": cell_time,
             "bend_angle_deg": cell_bend,
             "s_intrinsic": s_intrinsic,
-            "z_intrinsic": z_intrinsic,
+            "z_true": z_intrinsic,
+            "initial_position_true": initial_position_true,
+            "rho_true": rho_true,
             "x_extrinsic": x_extrinsic,
             "y_extrinsic": y_extrinsic,
-            "rho_decoder_true": rho_decoder_true,
-            "rho_absolute_true": rho_absolute_true,
         }
     ).set_index("cell_id", drop=False)
+
     count_table = pd.DataFrame(
         counts,
         index=cell_ids,
-        columns=decoder.gene_names,
+        columns=truth.gene_names,
     )
     count_table.index.name = "cell_id"
     expected_table = pd.DataFrame(
         expected_mean,
         index=cell_ids,
-        columns=decoder.gene_names,
+        columns=truth.gene_names,
     )
     expected_table.index.name = "cell_id"
 
@@ -175,4 +163,8 @@ def sample_atlas(
     if np.any(counts < 0):
         raise RuntimeError("Poisson counts must be nonnegative.")
 
-    return AtlasSample(obs=obs, counts=count_table, expected_mean=expected_table)
+    return AtlasSample(
+        obs=obs,
+        counts=count_table,
+        expected_mean=expected_table,
+    )
