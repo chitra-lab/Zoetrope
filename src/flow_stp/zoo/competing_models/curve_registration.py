@@ -35,7 +35,7 @@ from sklearn.linear_model import Ridge
 from ..common import AtlasData, ZooResult, set_seed
 
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
     local_k: int = 16
     pseudocount: float = 0.5
@@ -580,7 +580,7 @@ def fit(
     }
 
     result = ZooResult(
-        method="curve_registered_principal",
+        method="secondary_fisher_principal_curve",
         z_by_tissue=z_by_tissue,
         raw_coordinate_by_tissue=[
             np.asarray(x, dtype=np.float64) for x in oriented_u

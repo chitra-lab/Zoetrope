@@ -157,3 +157,23 @@ Thus `F` is integrated movement along the anatomical coordinate and `rho` is int
 - `training.py`: unit-speed PCA initialization, Poisson IRLS expression fitting, and block-coordinate MLE.
 - `geometry.py`: Fisher embedding, derivatives, observability, and closed-form `V`.
 - `trajectory.py`: unclamped RK4 integration of `F` and Fisher-arclength `rho`.
+
+## Gauge interpretation of finite flow
+
+The numerical anatomical coordinate is a chart rather than a uniquely
+identifiable biological scalar. A fitted coordinate/expression pair chooses a
+computational gauge. If another monotone coordinate `u` is related to that
+reference coordinate by `z = h_t(u)`, a finite flow map is moved into the
+`E`-gauge by
+
+\[
+F^{(E)}_{s,t}=h_t\circ F^{(u)}_{s,t}\circ h_s^{-1}.
+\]
+
+Therefore a scientific gauge penalty is not required merely to make `F`
+meaningful. A weak gauge-fixing convention may still be useful numerically,
+but it should be interpreted as choosing a representative of an equivalence
+class, not as identifying a biologically privileged ruler. If `F` is derived
+from the fitted `E`, it is already expressed in the gauge chosen by that fit.
+The Fisher residual speed `q` and accumulated progression `rho` are invariant
+under the same smooth monotone reparameterization.

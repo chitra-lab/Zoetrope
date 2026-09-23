@@ -32,6 +32,7 @@ from typing import Any, Mapping, Optional, Sequence, Tuple
 
 import gc
 import json
+import os
 import random
 import time
 
@@ -42,7 +43,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-METHOD_VERSION = "stage1a_direct_coverage_invariant_v1"
+METHOD_VERSION = "primary_stage1a_v1_frozen"
 Tensor = torch.Tensor
 
 
@@ -698,6 +699,7 @@ class Stage1ARunConfig:
     eval_batch_size: int = 8192
     diagnostic_cells_per_slice: int = 256
     seed: int = 20260622
+    deterministic: bool = True
     resume: bool = True
 
     # Geometry / coordinate map.
@@ -749,13 +751,31 @@ class Stage1AResult:
 # Runner helpers
 # =============================================================================
 
-def _set_all_seeds(seed: int) -> None:
+def _set_all_seeds(
+    seed: int,
+    *,
+    deterministic: bool = True,
+) -> None:
+    """Seed all stochastic backends and optionally require deterministic PyTorch ops."""
+    if deterministic:
+        # Must be set before CUDA BLAS is initialized.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+    torch.use_deterministic_algorithms(bool(deterministic))
+
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = not bool(deterministic)
+        torch.backends.cudnn.deterministic = bool(deterministic)
+        if deterministic:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
 
 
 def _device() -> torch.device:
@@ -2171,6 +2191,12 @@ def run_stage1a(
         else config
     )
 
+    # Seed before model construction or any stochastic backend work.
+    _set_all_seeds(
+        int(config.seed),
+        deterministic=bool(config.deterministic),
+    )
+
     output_dir = (
         Path(config.output_dir)
         .expanduser()
@@ -2190,7 +2216,7 @@ def run_stage1a(
 
     device = _device()
 
-    if device.type == "cuda":
+    if device.type == "cuda" and not bool(config.deterministic):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
@@ -2404,7 +2430,8 @@ def run_stage1a(
 
     else:
         _set_all_seeds(
-            int(config.seed)
+            int(config.seed),
+            deterministic=bool(config.deterministic),
         )
 
         model = (

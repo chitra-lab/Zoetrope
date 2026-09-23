@@ -1,65 +1,37 @@
-"""Active Stage-1 competitors for simulation and real-data model selection.
+"""Frozen model-selection interface.
 
-The zoo contains the retained coordinate families, controlled Stage1a
-expression variants, and a discrete geometric-atlas formulation that estimates
-adjacent-time transport directly modulo tissue-chart gauge.
+Only two coordinate estimators are retained after the positive-control model
+selection study:
+
+* primary: flexible Stage1a neural coordinate / neural expression model.
+* secondary: constrained Fisher principal-curve registration model.
+
+The removed zoo variants remain available in git history but are intentionally
+absent from the active package API.
 """
 
-from .fisher_score import (
-    ScoreRayleighConfig,
-    MultiscaleScoreRayleighConfig,
-    fit_score_rayleigh,
-    fit_multiscale_score_rayleigh,
+from .primary import (
+    PRIMARY_DEFAULT_CONFIG,
+    Stage1ARunConfig,
+    fit_primary,
 )
-from .curve_registration import Config as CurveRegistrationConfig
-from .curve_registration import fit as fit_curve_registration
-from .discrete_geometric_atlas import (
-    Config as DiscreteGeometricAtlasConfig,
-    AdjacentTransportMap,
-    DiscreteGeometricAtlas,
-    fit as fit_discrete_geometric_atlas,
-    fit_adjacent_transport,
+from .secondary import (
+    SECONDARY_DEFAULT_CONFIG,
+    SecondaryModelConfig,
+    fit_secondary,
 )
-from .stage1a_spline import (
-    Stage1aSplineModelConfig,
-    Stage1aSplineJointConfig,
-    Stage1aSplineProfiledConfig,
-    Stage1aSplineModel,
-    fit_stage1a_spline_joint,
-    fit_stage1a_spline_profiled,
-)
-from . import stage1a
 
-COMPETING_FAMILIES = {
-    "stage1a_nn_nn": stage1a,
-    "stage1a_nn_spline_joint": fit_stage1a_spline_joint,
-    "stage1a_nn_spline_profiled": fit_stage1a_spline_profiled,
-    "fisher_score": {
-        "single_scale": fit_score_rayleigh,
-        "multiscale": fit_multiscale_score_rayleigh,
-    },
-    "curve_registration": fit_curve_registration,
-    "discrete_geometric_atlas": fit_discrete_geometric_atlas,
+MODELS = {
+    "primary": fit_primary,
+    "secondary": fit_secondary,
 }
 
 __all__ = [
-    "ScoreRayleighConfig",
-    "MultiscaleScoreRayleighConfig",
-    "CurveRegistrationConfig",
-    "DiscreteGeometricAtlasConfig",
-    "AdjacentTransportMap",
-    "DiscreteGeometricAtlas",
-    "Stage1aSplineModelConfig",
-    "Stage1aSplineJointConfig",
-    "Stage1aSplineProfiledConfig",
-    "Stage1aSplineModel",
-    "fit_score_rayleigh",
-    "fit_multiscale_score_rayleigh",
-    "fit_curve_registration",
-    "fit_discrete_geometric_atlas",
-    "fit_adjacent_transport",
-    "fit_stage1a_spline_joint",
-    "fit_stage1a_spline_profiled",
-    "stage1a",
-    "COMPETING_FAMILIES",
+    "PRIMARY_DEFAULT_CONFIG",
+    "SECONDARY_DEFAULT_CONFIG",
+    "Stage1ARunConfig",
+    "SecondaryModelConfig",
+    "fit_primary",
+    "fit_secondary",
+    "MODELS",
 ]

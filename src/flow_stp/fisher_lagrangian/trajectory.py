@@ -1,4 +1,17 @@
-"""Lagrangian integration of anatomical flow and Fisher-arclength pseudotime."""
+"""Lagrangian integration of anatomical flow and Fisher-arclength pseudotime.
+
+Gauge convention
+----------------
+The numerical anatomical coordinate is a chart. If a second monotone chart is
+related by ``w = h_t(z)``, a finite flow map changes by endpoint conjugacy,
+
+    F_w(s, t) = h_t o F_z(s, t) o h_s^{-1}.
+
+Thus an independently estimated flow can always be expressed in the coordinate
+gauge chosen by the fitted expression field E. If the flow is derived from E,
+it is already in that gauge. Fisher progression speed and arclength are
+invariant under the same reparameterization.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
