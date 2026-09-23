@@ -580,7 +580,7 @@ def fit(
     }
 
     result = ZooResult(
-        method="curve_registered_principal",
+        method="secondary_fisher_principal_curve",
         z_by_tissue=z_by_tissue,
         raw_coordinate_by_tissue=[
             np.asarray(x, dtype=np.float64) for x in oriented_u
