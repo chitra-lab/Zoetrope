@@ -1,43 +1,48 @@
-# Stage-1 competing models
+# Frozen model selection
 
-The active comparison now contains six first-pass methods. The sixth is a
-discrete geometric-atlas formulation motivated by the gauge freedom of the
-tissue-specific anatomical coordinates.
+The exploratory estimator zoo is closed. After positive-control model selection,
+two models are retained for validation and the paper:
 
-## Active comparison
-
-| family / variant | implementation | purpose |
+| role | model | purpose |
 |---|---|---|
-| Stage1a NN alpha + NN E | flow_stp.stage1.stage1a | flexible joint baseline |
-| Stage1a NN alpha + spline E, joint | competing_models/stage1a_spline.py | isolate E representation |
-| Stage1a NN alpha + spline E, profiled | competing_models/stage1a_spline.py | isolate optimization strategy |
-| Fisher-score / Rayleigh | competing_models/fisher_score.py | local Fisher geometry -> coordinate |
-| Fisher principal-curve registration | competing_models/curve_registration.py | expression geometry -> registered coordinate |
-| Discrete geometric atlas | competing_models/discrete_geometric_atlas.py | local tissue charts + direct adjacent-time Fisher registration |
+| **Primary** | Stage1a neural coordinate + neural expression model | flexible production estimator |
+| **Secondary** | Fisher principal-curve registration | constrained geometric robustness check |
 
-The discrete geometric-atlas method does not impose one common numerical gauge
-on all tissues. Each tissue is treated as a local oriented chart of a common
-one-dimensional process manifold. Adjacent-time transport is estimated directly
-as a monotone map between charts by minimizing Fisher-flat expression
-displacement on the learned overlap. The residual displacement defines a
-discrete Fisher progression increment. Under tissue-wise monotone
-reparameterizations, adjacent maps transform by conjugacy.
+The primary and secondary models deliberately occupy opposite ends of the
+flexibility spectrum. Agreement on real data is therefore informative; disagreement
+identifies sensitivity to modeling assumptions rather than to small implementation
+variants.
 
-The two spline Stage1a variants keep the same scientific estimands as Stage1a.
-They are controlled representation/optimization variants rather than separate
-biological hypotheses.
+All previously explored zoo methods have been removed from the active package API.
+They remain available in git history for provenance.
 
-## Removed experimental estimators
+## Frozen defaults
 
-The following exploratory estimators remain retired after the frozen Qian PFC
-ordering experiments:
+The public wrappers expose `PRIMARY_DEFAULT_CONFIG` and
+`SECONDARY_DEFAULT_CONFIG`. These are the model-selection defaults used going
+forward. Dataset-specific file paths and runtime-only settings may be changed, but
+the scientific configuration should not be tuned per dataset unless a validation
+experiment identifies a specific failure mode.
 
-- RKHS score-Rayleigh;
-- Fisher diffusion;
-- geometry-anchored low-rank coordinate model;
-- multiblock kernel PLS.
+## Reproducibility
 
-## Escalation rule
+Both retained pipelines use explicit seeds. The primary PyTorch runner enables
+deterministic algorithms and disables cuDNN benchmarking when deterministic mode is
+active. Reproducibility is intended for repeated runs under the same software,
+hardware, and backend configuration; exact bitwise equality is not promised across
+different PyTorch/CUDA stacks.
 
-The simulation benchmark should stay compact. Additional machinery should only
-be introduced when a matched simulation diagnoses a specific failure mode.
+## Gauge convention and flow
+
+The numerical anatomical coordinate is a chart, not a biologically unique scalar.
+The fitted `(alpha, E)` pair chooses a computational gauge. If an independently
+estimated flow map is expressed in another monotone coordinate `u` with
+`z = h_t(u)`, express it in the `E` gauge by conjugation:
+
+```text
+F_E(s -> t) = h_t o F_u(s -> t) o h_s^{-1}.
+```
+
+No scientific gauge penalty is required to make `F` meaningful. If `F` is derived
+directly from `E`, it is already expressed in the learned `E` gauge. The progression
+quantities `q` and `rho` are invariant to such monotone chart reparameterizations.
