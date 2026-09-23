@@ -35,7 +35,7 @@ from sklearn.linear_model import Ridge
 from ..common import AtlasData, ZooResult, set_seed
 
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
     local_k: int = 16
     pseudocount: float = 0.5
