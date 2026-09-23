@@ -27,13 +27,15 @@ Tensor = torch.Tensor
 
 def set_seed(seed: int) -> None:
     """Seed retained zoo estimators and require deterministic PyTorch operations."""
+    # Must be set before CUDA BLAS is initialized.
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
     random.seed(int(seed))
     np.random.seed(int(seed))
     torch.manual_seed(int(seed))
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(int(seed))
 
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     torch.use_deterministic_algorithms(True)
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = False
