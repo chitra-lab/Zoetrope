@@ -43,7 +43,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-METHOD_VERSION = "stage1a_direct_coverage_invariant_v1"
+METHOD_VERSION = "primary_stage1a_v1_frozen"
 Tensor = torch.Tensor
 
 
