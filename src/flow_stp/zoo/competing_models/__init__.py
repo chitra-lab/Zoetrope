@@ -11,6 +11,7 @@ absent from the active package API.
 """
 
 from .primary import (
+    PRIMARY_BELLS_AND_WHISTLES_CONFIG,
     PRIMARY_DEFAULT_CONFIG,
     Stage1ARunConfig,
     fit_primary,
@@ -28,6 +29,7 @@ MODELS = {
 
 __all__ = [
     "PRIMARY_DEFAULT_CONFIG",
+    "PRIMARY_BELLS_AND_WHISTLES_CONFIG",
     "SECONDARY_DEFAULT_CONFIG",
     "Stage1ARunConfig",
     "SecondaryModelConfig",
