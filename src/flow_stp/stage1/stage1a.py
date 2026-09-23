@@ -1,24 +1,20 @@
-"""Selected Stage 1a anatomical-axis implementation.
+"""Primary Stage 1a anatomical-axis implementation.
 
-This module is the package implementation selected after benchmarking against
-the Qian PFC atlas and the default positive-control simulator.
+The selected primary estimator is intentionally stripped down:
 
-Coordinate model for tissue i:
-    u_i(x, y) = raw spatial neural field
-    z_local   = robust affine normalization of u_i on fixed spatial references
-    z         = a_i + (b_i - a_i) * z_local
+    u_i(x, y) = tissue-specific neural spatial field
+    z         = detached robust affine gauge normalization of u_i
+    log E_g   = beta_g + D_g(z, t)
 
-Coverage:
-    a_i = missing_left_i
-    b_i = 1 - missing_right_i
+Counts are fit with a Poisson likelihood.  By default the primary model has
+fixed full coordinate coverage, no learned slice nuisance term, no total-count
+library-size offset, and no coordinate-geometry penalties.  These additions
+remain configurable for explicit ablations, but are not part of the primary
+scientific estimator.
 
-Expression model:
-    log mu_gc = beta_g + F_g(z_c, t_i) + eta_gi + log_library_size_c
-
-Geometry:
-    * coverage-invariant submersion is imposed on z_local;
-    * relative normal-scale variation is
-          (grad z)^T H_z (grad z) / ||grad z||^3.
+A fixed or independently justified observation offset may still be supplied by
+a caller when appropriate; it should be treated as part of the observation
+model rather than the trajectory geometry.
 
 The historical names FlowSTPConfig / FlowSTPModel are retained so downstream
 Stage 1b code can continue using result.model.coord_maps.
@@ -43,7 +39,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-METHOD_VERSION = "primary_stage1a_v1_frozen"
+METHOD_VERSION = "primary_stage1a_v2_stripped"
 Tensor = torch.Tensor
 
 
@@ -99,15 +95,15 @@ class FlowSTPConfig:
 
     coord_hidden: Tuple[int, ...] = (64, 64)
     decoder_hidden: Tuple[int, ...] = (128, 128)
-    slice_effect_dim: int = 2
+    slice_effect_dim: int = 0
 
     coord_grad_min: float = 0.05
     coord_grad_eps: float = 1e-12
     scale_denominator_eps: float = 1e-8
 
     coverage_prior_sd: float = 0.05
-    max_missing_each_end: float = 0.25
-    initial_missing: float = 0.005
+    max_missing_each_end: float = 0.0
+    initial_missing: float = 0.0
 
     # Historical compatibility fields.
     field_hidden: Tuple[int, ...] = (128, 128)
@@ -115,7 +111,7 @@ class FlowSTPConfig:
     coord_min_width: float = 0.05
     q_epsilon: float = 0.0
     clamp_eps: float = 1e-5
-    coord_submersion_weight: float = 0.11364637
+    coord_submersion_weight: float = 0.0
     coord_grad_samples_per_slice: Optional[int] = 128
 
 
@@ -677,15 +673,16 @@ class FlowSTPModel(nn.Module):
 @dataclass(frozen=True)
 class Stage1ARunConfig:
     output_dir: Path = Path(
-        "flow_stp_stage1a_direct_coverage_v1"
+        "flow_stp_stage1a_primary_v2"
     )
 
-    # Selected objective.
-    submersion_weight: float = 0.11364637
-    scale_variation_weight: float = 1e-3
-    coverage_prior_weight: float = 1e-4
+    # Selected primary objective: Poisson likelihood only.
+    # The optional penalties remain exposed for explicit ablations.
+    submersion_weight: float = 0.0
+    scale_variation_weight: float = 0.0
+    coverage_prior_weight: float = 0.0
     coverage_prior_sd: float = 0.05
-    nuisance_weight: float = 5e-3
+    nuisance_weight: float = 0.0
 
     # Optimization.
     epochs: int = 1500
@@ -716,15 +713,17 @@ class Stage1ARunConfig:
     gauge_lower_quantile: float = 0.005
     gauge_upper_quantile: float = 0.995
 
-    # Direct coverage endpoints.
-    max_missing_each_end: float = 0.25
-    initial_missing: float = 0.005
+    # Primary uses fixed full coordinate coverage.  Nonzero endpoint ranges
+    # are retained only for the bells-and-whistles ablation.
+    max_missing_each_end: float = 0.0
+    initial_missing: float = 0.0
 
-    # Real-data default selected in the PFC benchmark.
-    # For the clean simulator, explicitly set slice_effect_dim=0.
-    slice_effect_dim: int = 2
-
-    use_library_size_offset: bool = True
+    # The primary model does not jointly learn arbitrary slice-gene nuisance:
+    # this was nonidentifiable with flexible tissue-specific coordinate maps in
+    # positive-control ablations.  Likewise, total observed counts are not used
+    # as a default exposure proxy because they can absorb biological variation.
+    slice_effect_dim: int = 0
+    use_library_size_offset: bool = False
 
     # Historical compatibility fields accepted but unused by the new
     # expression architecture.
@@ -2593,6 +2592,11 @@ def run_stage1a(
                 device,
             )
 
+            use_geometry_penalties = (
+                float(config.submersion_weight) != 0.0
+                or float(config.scale_variation_weight) != 0.0
+            )
+
             geometry_coords = (
                 _geometry_sample(
                     data,
@@ -2600,6 +2604,8 @@ def run_stage1a(
                     epoch,
                     device,
                 )
+                if use_geometry_penalties
+                else None
             )
 
             optimizer.zero_grad(
@@ -2625,15 +2631,27 @@ def run_stage1a(
                 reduction="mean",
             )
 
-            (
-                submersion,
-                scale_variation,
-            ) = (
-                model
-                .coordinate_geometry_penalties(
-                    geometry_coords
+            if use_geometry_penalties:
+                (
+                    submersion,
+                    scale_variation,
+                ) = (
+                    model
+                    .coordinate_geometry_penalties(
+                        geometry_coords
+                    )
                 )
-            )
+            else:
+                submersion = torch.zeros(
+                    (),
+                    dtype=data_nll.dtype,
+                    device=data_nll.device,
+                )
+                scale_variation = torch.zeros(
+                    (),
+                    dtype=data_nll.dtype,
+                    device=data_nll.device,
+                )
 
             coverage_prior = (
                 model.coordinate_maps
