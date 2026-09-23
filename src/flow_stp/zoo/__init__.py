@@ -7,6 +7,7 @@ and the secondary Fisher principal-curve model.
 from .common import AtlasData, TissueData, ZooResult, prepare_atlas
 from .competing_models import (
     MODELS,
+    PRIMARY_BELLS_AND_WHISTLES_CONFIG,
     PRIMARY_DEFAULT_CONFIG,
     SECONDARY_DEFAULT_CONFIG,
     SecondaryModelConfig,
@@ -23,6 +24,7 @@ __all__ = [
     "ZooResult",
     "prepare_atlas",
     "PRIMARY_DEFAULT_CONFIG",
+    "PRIMARY_BELLS_AND_WHISTLES_CONFIG",
     "SECONDARY_DEFAULT_CONFIG",
     "Stage1ARunConfig",
     "SecondaryModelConfig",
