@@ -1,18 +1,18 @@
 # ============================================================
-# Flow-STP Stage 1a: fixed moderate-submersion training run
+# Flow-STP Stage 1a: selected library-offset-only training run
 #
 # Run this cell AFTER:
 #   1. the Qian PFC data-loading cell, which creates
 #      counts_by_slice, spatial_by_slice, panel_df, obs_df, gene_names
 #   2. the standalone Stage 1a model-definition cell, which defines
-#      FlowSTPConfig and FlowSTPModel with the submersion penalty
+#      FlowSTPConfig and FlowSTPModel.
 #
-# This is the selected Stage 1a configuration from the parameter sweep:
+# Selected primary model:
+#     expression decoder + library-size offset
 #
-#     coord_submersion_weight = 0.11364637
-#
-# The optimization, split, initialization, diagnostics, and checkpoint
-# behavior match the sweep code so that this run is directly comparable.
+# Coordinate regularization and slice nuisance effects are disabled in the
+# primary configuration after Qian PFC ablations showed no consistent
+# anatomical benefit from positive submersion weights.
 #
 # Main outputs left in memory:
 #   model_flow_stp
@@ -65,11 +65,11 @@ if _missing:
 # Fixed-run settings
 # ------------------------------------------------------------
 
-# Selected moderate regularization strength.
-SUBMERSION_WEIGHT = 0.11364637
+# Primary Stage 1a uses no submersion regularization.
+SUBMERSION_WEIGHT = 0.0
 
 # Change only this path if a different output location is preferred.
-STAGE1A_ROOT = Path.cwd() / "flow_stp_stage1a_lambda_0p11364637"
+STAGE1A_ROOT = Path.cwd() / "flow_stp_stage1a_library_offset_only"
 
 # Kept identical to the full sweep for direct comparability.
 STAGE1A_EPOCHS = 1500
@@ -115,9 +115,10 @@ if DEVICE.type == "cuda":
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
 
-print("Submersion fixed Stage 1a run output:", STAGE1A_ROOT)
+print("Selected library-offset Stage 1a run output:", STAGE1A_ROOT)
 print("Device:", DEVICE)
-print("Selected submersion weight:", SUBMERSION_WEIGHT)
+print("Submersion weight:", SUBMERSION_WEIGHT)
+print("Library-size offset:", USE_LIBRARY_SIZE_OFFSET)
 
 # Reproducibility helpers
 # ------------------------------------------------------------
