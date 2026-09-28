@@ -1,24 +1,15 @@
 """Selected Stage 1a anatomical-axis implementation.
 
-This module is the package implementation selected after benchmarking against
-the Qian PFC atlas and the default positive-control simulator.
+The primary Stage 1a model is the minimal library-offset model selected after
+real-data ablations on the Qian PFC atlas:
 
-Coordinate model for tissue i:
     u_i(x, y) = raw spatial neural field
-    z_local   = robust affine normalization of u_i on fixed spatial references
-    z         = a_i + (b_i - a_i) * z_local
+    z_i       = robust affine normalization of u_i on fixed spatial references
+    log mu_gc = beta_g + F_g(z_c, t_i) + log_library_size_c
 
-Coverage:
-    a_i = missing_left_i
-    b_i = 1 - missing_right_i
-
-Expression model:
-    log mu_gc = beta_g + F_g(z_c, t_i) + eta_gi + log_library_size_c
-
-Geometry:
-    * coverage-invariant submersion is imposed on z_local;
-    * relative normal-scale variation is
-          (grad z)^T H_z (grad z) / ||grad z||^3.
+The coordinate regularizers, direct-coverage endpoints, and slice nuisance
+effects used in earlier experiments are retained as optional ablation controls,
+but are disabled by default.
 
 The historical names FlowSTPConfig / FlowSTPModel are retained so downstream
 Stage 1b code can continue using result.model.coord_maps.
@@ -42,7 +33,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-METHOD_VERSION = "stage1a_direct_coverage_invariant_v1"
+METHOD_VERSION = "stage1a_library_offset_v1"
 Tensor = torch.Tensor
 
 
@@ -98,15 +89,15 @@ class FlowSTPConfig:
 
     coord_hidden: Tuple[int, ...] = (64, 64)
     decoder_hidden: Tuple[int, ...] = (128, 128)
-    slice_effect_dim: int = 2
+    slice_effect_dim: int = 0
 
     coord_grad_min: float = 0.05
     coord_grad_eps: float = 1e-12
     scale_denominator_eps: float = 1e-8
 
     coverage_prior_sd: float = 0.05
-    max_missing_each_end: float = 0.25
-    initial_missing: float = 0.005
+    max_missing_each_end: float = 0.0
+    initial_missing: float = 0.0
 
     # Historical compatibility fields.
     field_hidden: Tuple[int, ...] = (128, 128)
@@ -114,7 +105,7 @@ class FlowSTPConfig:
     coord_min_width: float = 0.05
     q_epsilon: float = 0.0
     clamp_eps: float = 1e-5
-    coord_submersion_weight: float = 0.11364637
+    coord_submersion_weight: float = 0.0
     coord_grad_samples_per_slice: Optional[int] = 128
 
 
@@ -676,15 +667,16 @@ class FlowSTPModel(nn.Module):
 @dataclass(frozen=True)
 class Stage1ARunConfig:
     output_dir: Path = Path(
-        "flow_stp_stage1a_direct_coverage_v1"
+        "flow_stp_stage1a_library_offset_v1"
     )
 
-    # Selected objective.
-    submersion_weight: float = 0.11364637
-    scale_variation_weight: float = 1e-3
-    coverage_prior_weight: float = 1e-4
+    # Primary model: Poisson expression fit with a library-size exposure
+    # offset. Optional coordinate/nuisance regularizers are off by default.
+    submersion_weight: float = 0.0
+    scale_variation_weight: float = 0.0
+    coverage_prior_weight: float = 0.0
     coverage_prior_sd: float = 0.05
-    nuisance_weight: float = 5e-3
+    nuisance_weight: float = 0.0
 
     # Optimization.
     epochs: int = 1500
@@ -714,14 +706,15 @@ class Stage1ARunConfig:
     gauge_lower_quantile: float = 0.005
     gauge_upper_quantile: float = 0.995
 
-    # Direct coverage endpoints.
-    max_missing_each_end: float = 0.25
-    initial_missing: float = 0.005
+    # Direct-coverage endpoints are retained for ablations, but the selected
+    # primary model uses the complete normalized coordinate interval.
+    max_missing_each_end: float = 0.0
+    initial_missing: float = 0.0
 
-    # Real-data default selected in the PFC benchmark.
-    # For the clean simulator, explicitly set slice_effect_dim=0.
-    slice_effect_dim: int = 2
+    # Slice nuisance effects are retained for ablations only.
+    slice_effect_dim: int = 0
 
+    # Essential observation-model correction selected by the PFC ablation.
     use_library_size_offset: bool = True
 
     # Historical compatibility fields accepted but unused by the new
@@ -2566,15 +2559,6 @@ def run_stage1a(
                 device,
             )
 
-            geometry_coords = (
-                _geometry_sample(
-                    data,
-                    config,
-                    epoch,
-                    device,
-                )
-            )
-
             optimizer.zero_grad(
                 set_to_none=True
             )
@@ -2598,24 +2582,40 @@ def run_stage1a(
                 reduction="mean",
             )
 
-            (
-                submersion,
-                scale_variation,
-            ) = (
-                model
-                .coordinate_geometry_penalties(
+            zero_penalty = data_nll.new_zeros(())
+
+            if (
+                float(config.submersion_weight) != 0.0
+                or float(config.scale_variation_weight) != 0.0
+            ):
+                geometry_coords = _geometry_sample(
+                    data,
+                    config,
+                    epoch,
+                    device,
+                )
+                (
+                    submersion,
+                    scale_variation,
+                ) = model.coordinate_geometry_penalties(
                     geometry_coords
                 )
-            )
+            else:
+                submersion = zero_penalty
+                scale_variation = zero_penalty
 
-            coverage_prior = (
-                model.coordinate_maps
-                .coverage_penalty()
-            )
+            if float(config.coverage_prior_weight) != 0.0:
+                coverage_prior = (
+                    model.coordinate_maps
+                    .coverage_penalty()
+                )
+            else:
+                coverage_prior = zero_penalty
 
-            nuisance = (
-                model.nuisance_penalty()
-            )
+            if float(config.nuisance_weight) != 0.0:
+                nuisance = model.nuisance_penalty()
+            else:
+                nuisance = zero_penalty
 
             total = (
                 data_nll
