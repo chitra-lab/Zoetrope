@@ -32,6 +32,25 @@ class FisherGeometryResult:
         """Local Fisher information for displacement along the anatomical axis."""
         return self.tangent_energy
 
+    @property
+    def spatial_speed(self) -> Tensor:
+        r"""Fisher arclength rate per unit anatomical displacement.
+
+        This is ``||Psi_z||``. Integrating it over ``z`` gives the signed
+        spatial-progression coordinate along the expression manifold.
+        """
+        return torch.sqrt(self.tangent_energy.clamp_min(0.0))
+
+    @property
+    def transport_speed(self) -> Tensor:
+        r"""Instantaneous Fisher speed attributable to axial transport.
+
+        This is ``|V| ||Psi_z||`` and is Fisher-orthogonal to the residual
+        molecular speed ``speed = ||Psi_t + V Psi_z||`` under the selected
+        minimum-residual velocity.
+        """
+        return self.velocity.abs() * self.spatial_speed
+
 
 def fisher_embedding_from_log_mean(log_lambda: Tensor) -> Tensor:
     return 2.0 * torch.exp(0.5 * log_lambda)
