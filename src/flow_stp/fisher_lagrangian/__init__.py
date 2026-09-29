@@ -6,6 +6,7 @@ from .geometry import (
     fisher_embedding_from_log_mean,
     fisher_geometry,
     orthogonality_error,
+    spatial_progression,
 )
 from .model import (
     FisherLagrangianConfig,
@@ -58,6 +59,7 @@ __all__ = [
     "integrate_flow_and_rho",
     "local_dynamics",
     "orthogonality_error",
+    "spatial_progression",
     "rho_at",
     "train_step",
 ]
