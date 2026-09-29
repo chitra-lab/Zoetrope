@@ -10,6 +10,7 @@ from flow_stp.fisher_lagrangian import (
     fisher_geometry,
     fit_expression_irls,
     integrate_flow_and_rho,
+    spatial_progression,
 )
 
 
@@ -53,6 +54,29 @@ def test_pure_tangent_change_becomes_transport():
     g = fisher_geometry(field, z, t)
     assert torch.allclose(g.velocity, -torch.ones_like(g.velocity), atol=1e-5)
     assert torch.allclose(g.speed, torch.zeros_like(g.speed), atol=1e-5)
+
+def test_spatial_progression_is_signed_fisher_arclength():
+    field = OrthogonalToyField()
+    z = torch.tensor([-0.4, 0.2, 0.9])
+    t = torch.tensor([0.1, 0.5, 0.8])
+    sigma = spatial_progression(
+        field,
+        z,
+        t,
+        z_reference=0.0,
+        n_steps=8,
+    )
+    expected = z[:, None]
+    assert torch.allclose(sigma, expected, atol=1e-5)
+
+
+def test_geometry_reports_spatial_and_transport_speeds():
+    field = PureTransportToyField()
+    z = torch.tensor([0.2, 0.7])
+    t = torch.tensor([0.3, 0.8])
+    g = fisher_geometry(field, z, t)
+    assert torch.allclose(g.spatial_speed, torch.ones_like(g.spatial_speed), atol=1e-5)
+    assert torch.allclose(g.transport_speed, torch.ones_like(g.transport_speed), atol=1e-5)
 
 
 def test_lagrangian_rho_accumulates_fisher_speed():
