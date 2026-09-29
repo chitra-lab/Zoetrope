@@ -149,6 +149,78 @@ def fisher_geometry(
     )
 
 
+def spatial_progression(
+    field: ExpressionField,
+    z: Tensor,
+    time: Tensor,
+    *,
+    z_reference: float | Tensor = 0.0,
+    n_steps: int = 128,
+) -> Tensor:
+    r"""Return signed Fisher arclength along the spatial expression curve.
+
+    For each query ``(z,t)`` this computes
+
+    ``sigma(z,t) = integral_{z_reference}^{z} ||Psi_z(u,t)|| du``.
+
+    ``sigma`` is a molecularly calibrated spatial-progression coordinate:
+    it has the same orientation/order as ``z`` wherever ``||Psi_z|| > 0``,
+    but its increments measure Fisher expression distance rather than raw
+    anatomical-coordinate distance.
+
+    The integral is evaluated independently at each query time with a
+    trapezoidal rule. The sign is inherited from the integration direction,
+    so values below ``z_reference`` are negative.
+    """
+    if n_steps <= 0:
+        raise ValueError("n_steps must be positive")
+
+    zc = _as_col(z)
+    tc = _as_col(time)
+    if zc.shape[0] != tc.shape[0]:
+        raise ValueError("z and time must have matching rows")
+
+    if torch.is_tensor(z_reference):
+        zr = _as_col(z_reference).to(dtype=zc.dtype, device=zc.device)
+        if zr.shape[0] == 1 and zc.shape[0] != 1:
+            zr = zr.expand_as(zc)
+        elif zr.shape != zc.shape:
+            raise ValueError("z_reference must be scalar or have one row per query")
+    else:
+        zr = torch.full_like(zc, float(z_reference))
+
+    u = torch.linspace(
+        0.0,
+        1.0,
+        n_steps + 1,
+        dtype=zc.dtype,
+        device=zc.device,
+    )[None, :]
+    delta = zc - zr
+    grid_z = zr + delta * u
+    grid_t = tc.expand(-1, n_steps + 1)
+
+    flat_z = grid_z.reshape(-1, 1)
+    flat_t = grid_t.reshape(-1, 1)
+    _, _, psi_z, _ = field_derivatives(
+        field,
+        flat_z,
+        flat_t,
+        create_graph=False,
+    )
+    spatial_speed = torch.linalg.vector_norm(
+        psi_z,
+        dim=1,
+    ).reshape(zc.shape[0], n_steps + 1)
+
+    integral_unit = torch.trapezoid(
+        spatial_speed,
+        u.squeeze(0),
+        dim=1,
+    )[:, None]
+    return delta * integral_unit
+
+
 def orthogonality_error(result: FisherGeometryResult) -> Tensor:
     inner = (result.residual * result.dz).sum(dim=1)
     denom = (
