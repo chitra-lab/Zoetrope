@@ -128,6 +128,40 @@ V(z,t)=-\frac{\langle E_z,E_t\rangle_I}{\langle E_z,E_z\rangle_I}
 
 `||Psi_z||^2` is returned as an observability diagnostic. Where it is near zero, anatomical flow is not identifiable from expression alone. A tiny `eps` is used only for numerical stabilization.
 
+## Spatial progression
+
+At each timepoint, the spatial expression map
+\[
+z\mapsto \Psi(z,t)=2\sqrt{E(z,t)}
+\]
+defines a one-dimensional curve in Fisher expression space. We define the
+signed spatial-progression coordinate
+\[
+\sigma(z,t)
+=
+\int_{z_\mathrm{ref}}^z
+\|\Psi_z(u,t)\|\,du.
+\]
+
+Thus `sigma` has the same local orientation and ordering as `z` wherever
+`||Psi_z||>0`, but its increments are measured in Fisher molecular distance
+rather than raw anatomical-coordinate units. It quantifies progression along
+the spatial expression program, whereas `rho` below quantifies cumulative
+molecular change orthogonal to that spatial tangent along a Lagrangian
+characteristic.
+
+The local Fisher speed associated with axial transport is
+\[
+s_{\mathrm{transport}}(z,t)
+=
+|V(z,t)|\,\|\Psi_z(z,t)\|.
+\]
+Under the minimum-residual velocity, this tangent transport component is
+Fisher-orthogonal to the residual molecular velocity
+\[
+D\Psi/Dt=\Psi_t+V\Psi_z.
+\]
+
 ## Lagrangian flow and pseudotime
 
 The anatomical flow is
