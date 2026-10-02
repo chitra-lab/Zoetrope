@@ -404,41 +404,32 @@ def _integrate_expression(
         molecular_params,
     )
 
-    # Keep the entire affine path safely positive using one global rescaling.
-    # A single factor preserves the structured regime's constant slope norm.
-    negative = base_slope < 0.0
+    # Keep the entire affine path safely positive without changing its
+    # molecular slope. Because the path is affine in time, its minimum occurs
+    # at one of the two endpoints. A gene-wise constant shift changes neither
+    # spatial derivatives nor material velocity.
+    psi1_unshifted = (
+        psi0
+        + base_slope
+    )
 
-    if np.any(negative):
-        admissible = (
-            (
-                psi0[negative]
-                - config.psi_floor
-            )
-            / np.maximum(
-                -base_slope[negative],
-                1e-12,
-            )
-        )
+    endpoint_min = np.minimum(
+        psi0.min(axis=0),
+        psi1_unshifted.min(axis=0),
+    )
 
-        scale = min(
-            1.0,
-            0.95
-            * float(
-                np.min(admissible)
-            ),
-        )
-    else:
-        scale = 1.0
-
-    scale = max(
-        scale,
+    gene_shift = np.maximum(
+        config.psi_floor
+        - endpoint_min,
         0.0,
     )
 
-    material_slope = (
-        scale
-        * base_slope
+    psi0 = (
+        psi0
+        + gene_shift[None, :]
     )
+
+    material_slope = base_slope
 
     times = config.time_grid
 
@@ -448,10 +439,9 @@ def _integrate_expression(
         * material_slope[None, :, :]
     )
 
-    if np.min(psi) <= 0.0:
+    if np.min(psi) < config.psi_floor - 1e-10:
         raise RuntimeError(
-            "Affine expression trajectory became nonpositive "
-            "in Fisher coordinates."
+            "Affine expression trajectory violated the Fisher-coordinate floor."
         )
 
     material_velocity = np.broadcast_to(
@@ -508,8 +498,6 @@ def _integrate_expression(
         @ sin_dirs.T
     )
 
-    slope_a *= scale
-
     if config.parallel_strength != 0.0:
         # The exact Fisher identity is intentionally broken in this regime,
         # so a numerical derivative of the added violation is sufficient.
@@ -521,7 +509,7 @@ def _integrate_expression(
         )
         parallel_part = (
             material_slope
-            - scale * perpendicular
+            - perpendicular
         )
         slope_a += np.gradient(
             parallel_part,
@@ -543,11 +531,8 @@ def _integrate_expression(
         if key != "psi0_a_for_parallel"
     }
     stored_params[
-        "effective_slope_scale"
-    ] = np.asarray(
-        scale,
-        dtype=float,
-    )
+        "gene_shift"
+    ] = gene_shift.astype(float)
 
     return (
         psi,
