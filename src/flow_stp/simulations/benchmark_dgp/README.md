@@ -28,10 +28,20 @@ dz/dt = V_physical(z,t),   z(0)=a.
 ```
 
 The population-level expression state is generated in Fisher-flat coordinates
-`Psi = 2 sqrt(E)` as a smooth gene-space curve `H(a,t)`. A generic smooth raw
-molecular field is projected perpendicular to the current spatial tangent in
-the structured regime. This makes the local molecular-persistence hypothesis
-true without using the Flow-STP estimator as the data generator.
+`Psi = 2 sqrt(E)`. Spatial structure is deliberately rich: the initial
+expression curve contains multiple nonlinear anatomical programs, and the
+physical velocity retains nonlinear dependence on axial position. Temporal
+structure is deliberately simple and identifiable from snapshots. Along each
+hidden Lagrangian label, `Psi(a,t)` is affine in time, while the explicit
+temporal factor of `V_physical(z,t)` is also affine. Thus the benchmark can be
+challenging within each tissue without hiding oscillations or transients
+between sparsely sampled developmental ages.
+
+In the structured regime the molecular slope occupies gene-space directions
+orthogonal to the spatial-expression subspace and has constant Fisher norm
+across the anatomical axis. This makes the local molecular-persistence
+hypothesis exact while keeping the data generator independent of the Flow-STP
+neural estimator.
 
 Observed tissues are curved ribbons embedded independently into two-dimensional
 coordinate systems, including sample-specific rotation, reflection, translation
