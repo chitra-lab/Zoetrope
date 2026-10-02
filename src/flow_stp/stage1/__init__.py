@@ -7,6 +7,11 @@ from .stage1a import (
     Stage1AResult,
     run_stage1a,
 )
+from .stage1a_optimized import (
+    OPTIMIZATION_PRESET_VERSION,
+    Stage1AOptimizedRunConfig,
+    run_stage1a_optimized,
+)
 
 __all__ = [
     "FlowSTPConfig",
@@ -14,6 +19,9 @@ __all__ = [
     "Stage1ARunConfig",
     "Stage1AResult",
     "run_stage1a",
+    "OPTIMIZATION_PRESET_VERSION",
+    "Stage1AOptimizedRunConfig",
+    "run_stage1a_optimized",
 ]
 
 # BEGIN FLOW_STP_STAGE1B_PUBLIC_API
