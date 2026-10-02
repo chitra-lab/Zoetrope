@@ -10,7 +10,14 @@ __all__ = [
 ]
 
 # BEGIN FLOW_STP_STAGE1_PUBLIC_API
-from .stage1 import Stage1ARunConfig, Stage1AResult, run_stage1a
+from .stage1 import (
+    OPTIMIZATION_PRESET_VERSION,
+    Stage1ARunConfig,
+    Stage1AOptimizedRunConfig,
+    Stage1AResult,
+    run_stage1a,
+    run_stage1a_optimized,
+)
 
 try:
     __all__
@@ -18,9 +25,12 @@ except NameError:
     __all__ = []
 
 for _stage1_public_name in (
+    "OPTIMIZATION_PRESET_VERSION",
     "Stage1ARunConfig",
+    "Stage1AOptimizedRunConfig",
     "Stage1AResult",
     "run_stage1a",
+    "run_stage1a_optimized",
 ):
     if _stage1_public_name not in __all__:
         __all__.append(_stage1_public_name)
