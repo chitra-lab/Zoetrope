@@ -6,10 +6,24 @@ from .simulated_atlas_positive_control import (
     run_simulation,
     save_simulation,
 )
+from .benchmark_dgp import (
+    BenchmarkSimulationConfig,
+    BenchmarkSimulationResult,
+    BenchmarkTruth,
+    physical_velocity,
+    run_benchmark_simulation,
+    save_benchmark_simulation,
+)
 
 __all__ = [
     "SimulationConfig",
     "SimulationResult",
     "run_simulation",
     "save_simulation",
+    "BenchmarkSimulationConfig",
+    "BenchmarkSimulationResult",
+    "BenchmarkTruth",
+    "physical_velocity",
+    "run_benchmark_simulation",
+    "save_benchmark_simulation",
 ]
