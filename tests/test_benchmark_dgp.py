@@ -4,6 +4,7 @@ import numpy as np
 
 from flow_stp.simulations.benchmark_dgp import (
     BenchmarkSimulationConfig,
+    physical_velocity,
     run_benchmark_simulation,
 )
 
@@ -41,6 +42,49 @@ def test_structured_regime_identifies_physical_velocity():
         rtol=5e-5,
     )
 
+
+
+def test_physical_velocity_is_affine_in_time():
+    config = _small_config()
+    z = np.linspace(0.05, 0.95, 17)
+
+    v0 = physical_velocity(z, 0.0, config)
+    v1 = physical_velocity(z, 1.0, config)
+    vmid = physical_velocity(z, 0.5, config)
+
+    np.testing.assert_allclose(
+        vmid,
+        0.5 * (v0 + v1),
+        atol=1e-12,
+        rtol=1e-12,
+    )
+
+
+def test_lagrangian_expression_is_affine_in_time():
+    result = run_benchmark_simulation(_small_config())
+    psi = result.truth.psi_lagrangian.astype(float)
+    times = result.truth.time_grid.astype(float)
+
+    expected = (
+        psi[0][None, :, :]
+        + times[:, None, None]
+        * (psi[-1] - psi[0])[None, :, :]
+    )
+
+    np.testing.assert_allclose(
+        psi,
+        expected,
+        atol=2e-6,
+        rtol=2e-6,
+    )
+
+    velocity = result.truth.material_velocity.astype(float)
+    np.testing.assert_allclose(
+        velocity,
+        velocity[0][None, :, :],
+        atol=2e-6,
+        rtol=2e-6,
+    )
 
 def test_destructive_snapshots_never_reuse_particles():
     result = run_benchmark_simulation(_small_config())

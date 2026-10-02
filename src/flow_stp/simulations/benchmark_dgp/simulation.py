@@ -51,15 +51,24 @@ class BenchmarkSimulationResult:
     truth: BenchmarkTruth
 
 
+
 def physical_velocity(z, t, config: BenchmarkSimulationConfig) -> np.ndarray:
-    """Independently specified axial physical velocity field V*(z,t)."""
+    """Independently specified axial physical velocity field V*(z,t).
+
+    Spatial structure is deliberately nonlinear, while the explicit temporal
+    factor is affine in time.  This keeps the within-tissue velocity field
+    challenging without asking sparse developmental snapshots to identify
+    hidden temporal oscillations.
+    """
     z_arr, t_arr = np.broadcast_arrays(np.asarray(z, float), np.asarray(t, float))
-    temporal = 1.0 + config.velocity_temporal_modulation * np.sin(
-        2.0 * np.pi * t_arr
+
+    temporal = 1.0 + config.velocity_temporal_modulation * (
+        2.0 * t_arr - 1.0
     )
     spatial = 1.0 + config.velocity_spatial_modulation * np.cos(
         2.0 * np.pi * z_arr
     )
+
     return (
         config.velocity_scale
         * 4.0
@@ -108,6 +117,7 @@ def _normalize_columns(x):
     )
 
 
+
 def _initial_expression_curve(config, rng):
     a = config.a_grid
     k = config.n_spatial_programs
@@ -117,15 +127,32 @@ def _initial_expression_curve(config, rng):
     centers = np.clip(centers, 0.03, 0.97)
     widths = rng.uniform(0.10, 0.28, size=k)
 
-    basis = np.stack(
+    raw_basis = np.stack(
         [
             np.exp(-0.5 * ((a - center) / width) ** 2)
             for center, width in zip(centers, widths)
         ],
         axis=1,
     )
-    basis -= basis.mean(axis=0, keepdims=True)
-    basis = _normalize_columns(basis)
+
+    raw_basis_a = np.stack(
+        [
+            raw_basis[:, j]
+            * (-(a - center) / (width**2))
+            for j, (center, width)
+            in enumerate(zip(centers, widths))
+        ],
+        axis=1,
+    )
+
+    centered = raw_basis - raw_basis.mean(axis=0, keepdims=True)
+    column_norms = np.maximum(
+        np.linalg.norm(centered, axis=0, keepdims=True),
+        1e-12,
+    )
+
+    basis = centered / column_norms
+    basis_a = raw_basis_a / column_norms
 
     loadings = _normalize_columns(
         rng.normal(size=(config.n_genes, k))
@@ -144,27 +171,60 @@ def _initial_expression_curve(config, rng):
         )
     )
 
-    psi0 = (
-        baseline[None, :]
-        + basis @ loadings.T
-    )
+    psi0 = baseline[None, :] + basis @ loadings.T
+    psi0_a = basis_a @ loadings.T
 
     psi0 += np.maximum(
-        config.psi_floor
-        - psi0.min(axis=0),
+        config.psi_floor - psi0.min(axis=0),
         0.0,
     )[None, :]
 
-    return psi0, loadings
+    return psi0, psi0_a, loadings
 
 
-def _draw_molecular_programs(config, rng):
+
+def _draw_molecular_programs(config, rng, spatial_loadings):
+    """Draw a spatially complex molecular slope with constant Fisher norm.
+
+    The molecular directions live in the orthogonal complement of the initial
+    spatial-expression subspace.  Each latent program rotates in its own
+    two-dimensional gene-space plane as a function of anatomical position.
+    The resulting material-expression slope can vary strongly with anatomy
+    while retaining constant norm, which makes Psi(a,t) exactly affine in time
+    in the structured regime and keeps the Fisher identification exact.
+    """
     k = config.n_molecular_programs
+    needed = 2 * k
 
-    loadings = _normalize_columns(
-        rng.normal(size=(config.n_genes, k))
+    spatial_basis, _ = np.linalg.qr(
+        spatial_loadings,
+        mode="reduced",
     )
-    loadings *= (
+
+    candidate = rng.normal(
+        size=(config.n_genes, needed)
+    )
+    candidate -= spatial_basis @ (
+        spatial_basis.T @ candidate
+    )
+
+    molecular_directions, _ = np.linalg.qr(
+        candidate,
+        mode="reduced",
+    )
+
+    molecular_directions = molecular_directions[:, :needed]
+
+    amplitudes = rng.uniform(
+        0.5,
+        1.5,
+        size=k,
+    )
+    amplitudes /= np.maximum(
+        np.linalg.norm(amplitudes),
+        1e-12,
+    )
+    amplitudes *= (
         config.molecular_program_scale
         * np.sqrt(config.n_genes)
     )
@@ -175,29 +235,16 @@ def _draw_molecular_programs(config, rng):
             4,
             size=k,
         ).astype(float),
-        "frequency_t": rng.integers(
-            1,
-            4,
-            size=k,
-        ).astype(float),
         "phase_a": rng.uniform(
             0.0,
             2.0 * np.pi,
             size=k,
         ),
-        "phase_t": rng.uniform(
-            0.0,
-            2.0 * np.pi,
-            size=k,
-        ),
-        "mixture": rng.uniform(
-            0.25,
-            0.75,
-            size=k,
-        ),
+        "amplitude": amplitudes,
     }
 
-    return loadings, params
+    return molecular_directions, params
+
 
 
 def _molecular_raw_field(
@@ -206,62 +253,65 @@ def _molecular_raw_field(
     loadings,
     params,
 ):
-    aa = np.asarray(
+    """Affine-time molecular expression slope used by the benchmark.
+
+    The returned field is independent of t: Psi(a,t) is therefore a straight
+    line in Fisher-flat expression space along each hidden Lagrangian label.
+    Spatial dependence remains nonlinear through rotating gene-space programs.
+    """
+    del t
+
+    a = np.asarray(
         a,
         float,
-    )[:, None]
+    ).reshape(-1)
 
-    fa = params[
+    k = len(
+        params["frequency_a"]
+    )
+
+    cos_dirs = loadings[
+        :,
+        0 : 2 * k : 2,
+    ]
+    sin_dirs = loadings[
+        :,
+        1 : 2 * k : 2,
+    ]
+
+    frequency = params[
         "frequency_a"
     ][None, :]
 
-    ft = params[
-        "frequency_t"
-    ][None, :]
-
-    pa = params[
+    phase = params[
         "phase_a"
     ][None, :]
 
-    pt = params[
-        "phase_t"
+    amplitude = params[
+        "amplitude"
     ][None, :]
 
-    mixture = params[
-        "mixture"
-    ][None, :]
-
-    spatial_wave = np.sin(
-        np.pi * fa * aa
-        + pa
+    angle = (
+        np.pi
+        * a[:, None]
+        * frequency
+        + phase
     )
 
-    temporal_wave = np.cos(
-        np.pi * ft * float(t)
-        + pt
+    cos_term = (
+        amplitude
+        * np.cos(angle)
+    )
+    sin_term = (
+        amplitude
+        * np.sin(angle)
     )
 
-    transient = np.exp(
-        -0.5
-        * (
-            (
-                float(t)
-                - mixture
-            )
-            / 0.22
-        )
-        ** 2
+    return (
+        cos_term @ cos_dirs.T
+        + sin_term @ sin_dirs.T
     )
 
-    latent = (
-        spatial_wave
-        * (
-            0.65 * temporal_wave
-            + 0.35 * transient
-        )
-    )
-
-    return latent @ loadings.T
 
 
 def _expression_rhs(
@@ -271,77 +321,65 @@ def _expression_rhs(
     molecular_loadings,
     molecular_params,
 ):
+    """Material expression velocity for the affine-time benchmark."""
+    del psi
+
     a = config.a_grid
 
-    psi_a = np.gradient(
-        psi,
-        a,
-        axis=0,
-        edge_order=2,
-    )
-
-    tangent_norm = np.sqrt(
-        np.maximum(
-            np.sum(
-                psi_a * psi_a,
-                axis=1,
-                keepdims=True,
-            ),
-            1e-12,
-        )
-    )
-
-    tangent_unit = (
-        psi_a
-        / tangent_norm
-    )
-
-    raw = _molecular_raw_field(
+    perpendicular = _molecular_raw_field(
         a,
         t,
         molecular_loadings,
         molecular_params,
     )
 
-    tangent_component = np.sum(
-        raw * tangent_unit,
-        axis=1,
-        keepdims=True,
-    )
+    if config.parallel_strength == 0.0:
+        return perpendicular
 
-    perpendicular = (
-        raw
-        - tangent_component
-        * tangent_unit
+    # The violation remains affine in time at the level of Psi because this
+    # driver is time independent.  It intentionally injects molecular change
+    # in the initial spatial-expression tangent direction.
+    psi0_a = molecular_params[
+        "psi0_a_for_parallel"
+    ]
+    tangent_norm = np.sqrt(
+        np.maximum(
+            np.sum(
+                psi0_a * psi0_a,
+                axis=1,
+                keepdims=True,
+            ),
+            1e-12,
+        )
     )
+    tangent_unit = psi0_a / tangent_norm
 
     parallel_driver = (
         config.molecular_program_scale
+        * np.sqrt(config.n_genes)
         * np.sin(np.pi * a)[:, None]
-        * np.cos(
-            2.0
-            * np.pi
-            * float(t)
-        )
+        * tangent_unit
     )
 
     return (
         perpendicular
         + config.parallel_strength
         * parallel_driver
-        * tangent_unit
     )
+
 
 
 def _integrate_expression(
     config,
     rng,
 ):
-    psi0, spatial_loadings = (
-        _initial_expression_curve(
-            config,
-            rng,
-        )
+    (
+        psi0,
+        psi0_a,
+        spatial_loadings,
+    ) = _initial_expression_curve(
+        config,
+        rng,
     )
 
     (
@@ -350,75 +388,161 @@ def _integrate_expression(
     ) = _draw_molecular_programs(
         config,
         rng,
+        spatial_loadings,
     )
 
-    times = config.time_grid
+    molecular_params = {
+        **molecular_params,
+        "psi0_a_for_parallel": psi0_a,
+    }
 
-    psi = np.empty(
-        (
-            len(times),
-            config.n_a_grid,
-            config.n_genes,
-        ),
-        float,
-    )
-
-    psi[0] = psi0
-
-    rhs = lambda state, t: _expression_rhs(
-        state,
-        t,
+    base_slope = _expression_rhs(
+        psi0,
+        0.0,
         config,
         molecular_loadings,
         molecular_params,
     )
 
-    for k in range(
-        len(times) - 1
-    ):
-        dt = float(
-            times[k + 1]
-            - times[k]
-        )
-
-        psi[k + 1] = _rk4_step(
-            psi[k],
-            float(times[k]),
-            dt,
-            rhs,
-        )
-
-        if (
-            np.min(
-                psi[k + 1]
-            )
-            <= config.psi_floor
-            * 0.25
-        ):
-            raise RuntimeError(
-                "Expression trajectory approached zero "
-                "in Fisher coordinates."
-            )
-
-    material_velocity = np.stack(
-        [
-            rhs(
-                psi[k],
-                float(times[k]),
-            )
-            for k
-            in range(len(times))
-        ],
-        axis=0,
+    # Keep the entire affine path safely positive without changing its
+    # molecular slope. Because the path is affine in time, its minimum occurs
+    # at one of the two endpoints. A gene-wise constant shift changes neither
+    # spatial derivatives nor material velocity.
+    psi1_unshifted = (
+        psi0
+        + base_slope
     )
+
+    endpoint_min = np.minimum(
+        psi0.min(axis=0),
+        psi1_unshifted.min(axis=0),
+    )
+
+    gene_shift = np.maximum(
+        config.psi_floor
+        - endpoint_min,
+        0.0,
+    )
+
+    psi0 = (
+        psi0
+        + gene_shift[None, :]
+    )
+
+    material_slope = base_slope
+
+    times = config.time_grid
+
+    psi = (
+        psi0[None, :, :]
+        + times[:, None, None]
+        * material_slope[None, :, :]
+    )
+
+    if np.min(psi) < config.psi_floor - 1e-10:
+        raise RuntimeError(
+            "Affine expression trajectory violated the Fisher-coordinate floor."
+        )
+
+    material_velocity = np.broadcast_to(
+        material_slope[None, :, :],
+        psi.shape,
+    ).copy()
+
+    # In the structured regime, compute the anatomical derivative analytically
+    # for the rotating molecular programs.  This avoids turning a deliberately
+    # exact positive control into a finite-difference boundary artifact.
+    a = config.a_grid
+    k = config.n_molecular_programs
+
+    cos_dirs = molecular_loadings[
+        :,
+        0 : 2 * k : 2,
+    ]
+    sin_dirs = molecular_loadings[
+        :,
+        1 : 2 * k : 2,
+    ]
+
+    frequency = molecular_params[
+        "frequency_a"
+    ][None, :]
+    phase = molecular_params[
+        "phase_a"
+    ][None, :]
+    amplitude = molecular_params[
+        "amplitude"
+    ][None, :]
+
+    angle = (
+        np.pi
+        * a[:, None]
+        * frequency
+        + phase
+    )
+
+    slope_a = (
+        (
+            -amplitude
+            * np.pi
+            * frequency
+            * np.sin(angle)
+        )
+        @ cos_dirs.T
+        + (
+            amplitude
+            * np.pi
+            * frequency
+            * np.cos(angle)
+        )
+        @ sin_dirs.T
+    )
+
+    if config.parallel_strength != 0.0:
+        # The exact Fisher identity is intentionally broken in this regime,
+        # so a numerical derivative of the added violation is sufficient.
+        perpendicular = _molecular_raw_field(
+            a,
+            0.0,
+            molecular_loadings,
+            molecular_params,
+        )
+        parallel_part = (
+            material_slope
+            - perpendicular
+        )
+        slope_a += np.gradient(
+            parallel_part,
+            a,
+            axis=0,
+            edge_order=2,
+        )
+
+    psi_a = (
+        psi0_a[None, :, :]
+        + times[:, None, None]
+        * slope_a[None, :, :]
+    )
+
+    stored_params = {
+        key: value
+        for key, value
+        in molecular_params.items()
+        if key != "psi0_a_for_parallel"
+    }
+    stored_params[
+        "gene_shift"
+    ] = gene_shift.astype(float)
 
     return (
         psi,
         material_velocity,
+        psi_a,
         spatial_loadings,
         molecular_loadings,
-        molecular_params,
+        stored_params,
     )
+
 
 
 def _draw_off_axis_programs(
@@ -449,11 +573,6 @@ def _draw_off_axis_programs(
             4,
             size=k,
         ).astype(float),
-        "frequency_t": rng.integers(
-            1,
-            4,
-            size=k,
-        ).astype(float),
         "phase": rng.uniform(
             0.0,
             2.0 * np.pi,
@@ -464,9 +583,20 @@ def _draw_off_axis_programs(
             3,
             size=k,
         ).astype(int),
+        "amplitude_start": rng.uniform(
+            -1.0,
+            1.0,
+            size=k,
+        ),
+        "amplitude_end": rng.uniform(
+            -1.0,
+            1.0,
+            size=k,
+        ),
     }
 
     return loadings, params
+
 
 
 def _off_axis_effect(
@@ -498,10 +628,6 @@ def _off_axis_effect(
         "frequency_a"
     ][None, :]
 
-    ft = params[
-        "frequency_t"
-    ][None, :]
-
     phase = params[
         "phase"
     ][None, :]
@@ -509,6 +635,21 @@ def _off_axis_effect(
     power = params[
         "u_power"
     ][None, :]
+
+    amplitude_start = params[
+        "amplitude_start"
+    ][None, :]
+
+    amplitude_end = params[
+        "amplitude_end"
+    ][None, :]
+
+    temporal_amplitude = (
+        (1.0 - t)
+        * amplitude_start
+        + t
+        * amplitude_end
+    )
 
     u_term = np.where(
         power == 1,
@@ -524,13 +665,7 @@ def _off_axis_effect(
             * a
             + phase
         )
-        * np.cos(
-            np.pi
-            * ft
-            * t
-            + 0.5
-            * phase
-        )
+        * temporal_amplitude
     )
 
     return latent @ loadings.T
@@ -573,6 +708,7 @@ def _derive_truth(
     (
         psi,
         material_velocity,
+        psi_a,
         spatial_loadings,
         molecular_loadings,
         molecular_params,
@@ -591,13 +727,6 @@ def _derive_truth(
 
     a = config.a_grid
     times = config.time_grid
-
-    psi_a = np.gradient(
-        psi,
-        a,
-        axis=1,
-        edge_order=2,
-    )
 
     flow_a = np.gradient(
         flow,

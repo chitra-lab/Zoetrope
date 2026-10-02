@@ -31,7 +31,8 @@ class BenchmarkSimulationConfig:
     n_molecular_programs: int = 6
     n_off_axis_programs: int = 4
 
-    # Physical flow.  The z(1-z) factor in the implementation keeps the flow
+    # Physical flow. The z-dependence remains deliberately nonlinear, while
+    # the explicit temporal factor is affine. The z(1-z) factor keeps the flow
     # inside [0,1] without making the velocity field an estimator artifact.
     velocity_scale: float = 0.22
     velocity_temporal_modulation: float = 0.30
@@ -106,6 +107,17 @@ class BenchmarkSimulationConfig:
             )
         if self.n_genes < 4:
             raise ValueError("n_genes must be at least 4.")
+        required_gene_dims = (
+            self.n_spatial_programs
+            + 2 * self.n_molecular_programs
+        )
+        if self.n_genes < required_gene_dims:
+            raise ValueError(
+                "n_genes must be at least n_spatial_programs + "
+                "2 * n_molecular_programs so the affine-time molecular "
+                "programs can occupy gene-space directions orthogonal to "
+                "the spatial-expression subspace."
+            )
         if self.n_a_grid < 21 or self.n_time_grid < 21:
             raise ValueError("n_a_grid and n_time_grid must both be at least 21.")
         if min(
