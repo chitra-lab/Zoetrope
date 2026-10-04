@@ -1,4 +1,4 @@
-"""Lagrangian integration of anatomical flow and Fisher-arclength pseudotime."""
+"""Continuous-time Lagrangian integration for densely sampled time courses."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -44,7 +44,7 @@ def integrate_flow_and_rho(
     n_steps: int = 128,
     eps: float = 1e-8,
 ) -> LagrangianTrajectory:
-    r"""Integrate ``dF/dt=V(F,t)`` and Fisher-arclength ``d rho/dt`` with RK4.
+    r"""Continuous-mode integration of ``dF/dt=V(F,t)`` and ``d rho/dt`` with RK4.\n\n    This remains the dense-time option. The default sparse-time estimator lives\n    in :mod:`flow_stp.fisher_lagrangian.dynamics` and fits finite-time flow maps\n    directly between observed ages.
 
     The anatomical coordinate is not intrinsically bounded, so trajectories are
     never clamped to ``[0,1]``.  The fitted expression field must have spline

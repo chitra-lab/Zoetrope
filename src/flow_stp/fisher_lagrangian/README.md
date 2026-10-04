@@ -93,6 +93,78 @@ and finishes with the conditional expression MLE for the final coordinates.
 
 Coordinate networks can be initialized by pretraining them to the signed projection onto the normalized PCA major axis of each tissue. Because that projection direction has unit norm, this initialization already has the intended unit spatial scale and is not min-max normalized to `[0,1]`. Orientation signs should be chosen consistently across tissues.
 
+## Temporal-resolution-aware dynamics
+
+Flow-STP uses one molecular-persistence principle at two temporal resolutions.
+The default is finite-time inference because developmental spatial transcriptomics
+is commonly observed at a small number of destructive snapshots. The original
+continuous estimator remains available when temporal sampling is sufficiently
+dense.
+
+### Default: finite-time molecular persistence
+
+For adjacent observed ages \(t_k<t_{k+1}\), define the Fisher-flat expression
+field \(\Psi(z,t)=2\sqrt{E(z,t)}\) and estimate a monotone finite-time flow map
+\(F_k\) directly:
+
+\[
+F_k
+=\arg\min_{F\in\mathcal F_K}
+\sum_j
+\left\|
+\Psi(F(z_j),t_{k+1})-\Psi(z_j,t_k)
+\right\|^2.
+\]
+
+The implementation uses strictly increasing piecewise-linear maps with fixed
+source knots and positive target gaps. Candidate complexities are
+\(K\in\{4,6,8,12,16,24,32\}\) by default. Complexity is selected using held-out
+genes with a conservative one-standard-error-style rule, then the selected map
+is refit using all genes. Gene-wise losses are correlated, so this rule is a
+conservative model-selection heuristic rather than a formal independent-gene
+sampling confidence interval.
+
+The interval-resolution velocity is derived from the fitted flow,
+
+\[
+\bar V_k(a)=\frac{F_k(a)-a}{t_{k+1}-t_k}.
+\]
+
+This is distinct from \(F_k'(a)\), which is the local deformation/Jacobian of
+the flow. Cumulative molecular progression is evaluated on the observed time
+mesh by Fisher chord length,
+
+\[
+\rho_a(t_m)
+=\sum_{k<m}
+\left\|
+\Psi(a_{k+1},t_{k+1})-\Psi(a_k,t_k)
+\right\|,
+\qquad a_{k+1}=F_k(a_k).
+\]
+
+Use this mode through `DynamicsConfig(mode="finite_time")`; it is the default.
+
+### Optional: continuous dynamics for dense time sampling
+
+When the user judges temporal sampling to be dense enough to support stable
+instantaneous derivatives, `DynamicsConfig(mode="continuous")` retains the
+original local Fisher projection and RK4 characteristic integration described
+below. No automatic density threshold is imposed because identifiability also
+depends on noise and the temporal smoothness of the expression field.
+
+The finite-time estimator is a first-order discretization of the same
+continuous molecular-persistence principle. If
+\(F(z)=z+v\Delta t\), then
+
+\[
+\Psi(F(z),t+\Delta t)-\Psi(z,t)
+=\Delta t\{\Psi_t+v\Psi_z\}+O(\Delta t^2).
+\]
+
+Thus finite-time molecular matching converges to the continuous
+minimum-residual velocity as the observation interval shrinks.
+
 ## Fisher geometry and closed-form local velocity
 
 For independent Poisson means,
@@ -189,5 +261,6 @@ Thus `F` is integrated movement along the anatomical coordinate and `rho` is int
 - `spline.py`: differentiable fixed spatial and anchored temporal spline bases.
 - `model.py`: tissue-specific unbounded coordinate MLPs, explicit offsets, spline `E`, Poisson likelihood, and unit-speed gauge.
 - `training.py`: unit-speed PCA initialization, Poisson IRLS expression fitting, and block-coordinate MLE.
-- `geometry.py`: Fisher embedding, derivatives, observability, and closed-form `V`.
-- `trajectory.py`: unclamped RK4 integration of `F` and Fisher-arclength `rho`.
+- `geometry.py`: Fisher embedding, derivatives, observability, and closed-form instantaneous `V` for continuous mode.
+- `dynamics.py`: default finite-time molecular-persistence flow, one-SE-style complexity selection, interval velocity, and the finite/continuous mode switch.
+- `trajectory.py`: optional continuous-mode unclamped RK4 integration of `F` and Fisher-arclength `rho`.
