@@ -1,7 +1,7 @@
-"""Stage 2: derivative-based Fisher dynamics derived from Stage-1 E(z,t)."""
+"""Stage 2: derivative-based dynamics in directly fitted Fisher coordinates."""
 
 from .dynamics import (
-    ExpressionField,
+    FisherFlatField,
     FlowTrajectory,
     LocalDynamics,
     derived_velocity,
@@ -12,7 +12,7 @@ from .dynamics import (
 )
 
 __all__ = [
-    "ExpressionField",
+    "FisherFlatField",
     "LocalDynamics",
     "FlowTrajectory",
     "field_derivatives",
