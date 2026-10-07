@@ -1,4 +1,4 @@
-"""Stage 1: selected anatomical-axis + Poisson expression model."""
+"""Stage 1: anatomical axis + direct Fisher-flat Poisson expression model."""
 
 from .stage1a import (
     METHOD_VERSION,
