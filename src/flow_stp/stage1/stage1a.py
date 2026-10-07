@@ -96,6 +96,13 @@ class FlowSTPConfig:
     num_slices: int
     num_genes: int
 
+    # Coordinate decoder choices. The expression model and likelihood are
+    # identical across variants; only the map from tissue position to z and
+    # its affine gauge differ.
+    coordinate_decoder: str = "independent"
+    gauge_mode: str = "per_tissue"
+    slice_times: Tuple[float, ...] = ()
+
     coord_hidden: Tuple[int, ...] = (64, 64)
     decoder_hidden: Tuple[int, ...] = (128, 128)
     slice_effect_dim: int = 0
@@ -125,18 +132,46 @@ class SliceCoordinateMaps(nn.Module):
         self.num_slices = int(config.num_slices)
         self.coverage_prior_sd = float(config.coverage_prior_sd)
         self.max_missing_each_end = float(config.max_missing_each_end)
+        self.coordinate_decoder = str(config.coordinate_decoder)
+        self.gauge_mode = str(config.gauge_mode)
 
-        self.maps = nn.ModuleList(
-            [
-                MLP(
-                    2,
-                    1,
-                    config.coord_hidden,
-                    "tanh",
-                )
-                for _ in range(self.num_slices)
-            ]
+        slice_times = tuple(float(t) for t in config.slice_times)
+        if len(slice_times) != self.num_slices:
+            raise ValueError(
+                "FlowSTPConfig.slice_times must contain one normalized "
+                "time per slice."
+            )
+        self.register_buffer(
+            "slice_times",
+            torch.as_tensor(slice_times, dtype=torch.float32),
         )
+
+        if self.coordinate_decoder == "independent":
+            self.maps = nn.ModuleList(
+                [
+                    MLP(
+                        2,
+                        1,
+                        config.coord_hidden,
+                        "tanh",
+                    )
+                    for _ in range(self.num_slices)
+                ]
+            )
+            self.shared_map = None
+        elif self.coordinate_decoder == "shared_time":
+            self.maps = nn.ModuleList()
+            self.shared_map = MLP(
+                3,
+                1,
+                config.coord_hidden,
+                "tanh",
+            )
+        else:
+            raise ValueError(
+                "coordinate_decoder must be 'independent' or 'shared_time'; "
+                f"got {self.coordinate_decoder!r}."
+            )
 
         self.missing_left = nn.Parameter(
             torch.full(
@@ -166,7 +201,27 @@ class SliceCoordinateMaps(nn.Module):
         coords: Tensor,
         slice_id: int,
     ) -> Tensor:
-        return self.maps[int(slice_id)](coords).squeeze(-1)
+        s = int(slice_id)
+
+        if self.coordinate_decoder == "independent":
+            return self.maps[s](coords).squeeze(-1)
+
+        if self.shared_map is None:
+            raise RuntimeError("shared_time coordinate decoder is missing.")
+
+        time_value = self.slice_times[s].to(
+            device=coords.device,
+            dtype=coords.dtype,
+        )
+        time_column = (
+            time_value.reshape(1, 1)
+            .expand(coords.shape[0], 1)
+        )
+        inputs = torch.cat(
+            [coords, time_column],
+            dim=1,
+        )
+        return self.shared_map(inputs).squeeze(-1)
 
     def coverage_intervals(
         self,
@@ -806,7 +861,14 @@ class Stage1ARunConfig:
     seed: int = 20260622
     resume: bool = True
 
-    # Geometry / coordinate map.
+    # Geometry / coordinate map. These fields define the three supported
+    # Stage-1 coordinate choices:
+    #   independent + per_tissue
+    #   shared_time + per_tissue
+    #   shared_time + global
+    coordinate_decoder: str = "independent"
+    gauge_mode: str = "per_tissue"
+
     coord_grad_min: float = 0.05
     coord_grad_samples_per_slice: Optional[int] = 128
     coord_grad_eps: float = 1e-12
@@ -1505,6 +1567,16 @@ def _make_model_config(
         num_genes=int(
             data["n_genes"]
         ),
+        coordinate_decoder=str(
+            config.coordinate_decoder
+        ),
+        gauge_mode=str(
+            config.gauge_mode
+        ),
+        slice_times=tuple(
+            float(t)
+            for t in data["normalized_times"]
+        ),
         coord_hidden=tuple(
             config.coord_hidden
         ),
@@ -1557,44 +1629,84 @@ def _refresh_gauge(
     config: Stage1ARunConfig,
     device: torch.device,
 ) -> None:
+    """Refresh the detached robust affine coordinate gauge.
+
+    per_tissue reproduces the original Stage-1 behavior: each tissue gets its
+    own robust affine normalization. global computes one robust affine
+    normalization from pooled fixed reference points across all tissues and
+    copies that same ruler to every time point.
+    """
     model.eval()
 
-    for s in range(
-        data["n_slices"]
-    ):
-        idx = data[
-            "gauge_idx"
-        ][s]
-
-        x = (
-            data["coords"][s][idx]
-            .to(
-                device,
-                non_blocking=(
-                    device.type == "cuda"
-                ),
-            )
+    gauge_mode = str(config.gauge_mode)
+    if gauge_mode not in {"per_tissue", "global"}:
+        raise ValueError(
+            "gauge_mode must be 'per_tissue' or 'global'; "
+            f"got {gauge_mode!r}."
         )
 
-        u = (
-            model.coordinate_maps
-            .raw_one_slice(
-                x,
-                s,
+    if gauge_mode == "global":
+        raw_parts = []
+
+        for s in range(data["n_slices"]):
+            idx = data["gauge_idx"][s]
+            x = data["coords"][s][idx].to(
+                device,
+                non_blocking=(device.type == "cuda"),
             )
+            raw_parts.append(
+                model.coordinate_maps.raw_one_slice(
+                    x,
+                    s,
+                )
+            )
+
+        pooled = torch.cat(raw_parts, dim=0)
+        low = torch.quantile(
+            pooled,
+            float(config.gauge_lower_quantile),
+        )
+        high = torch.quantile(
+            pooled,
+            float(config.gauge_upper_quantile),
+        )
+
+        if (
+            not torch.isfinite(low)
+            or not torch.isfinite(high)
+            or high <= low + 1e-5
+        ):
+            raise RuntimeError(
+                "Degenerate global robust coordinate gauge."
+            )
+
+        model.coordinate_maps.gauge_low.copy_(
+            low.expand_as(model.coordinate_maps.gauge_low)
+        )
+        model.coordinate_maps.gauge_high.copy_(
+            high.expand_as(model.coordinate_maps.gauge_high)
+        )
+        return
+
+    for s in range(data["n_slices"]):
+        idx = data["gauge_idx"][s]
+        x = data["coords"][s][idx].to(
+            device,
+            non_blocking=(device.type == "cuda"),
+        )
+
+        u = model.coordinate_maps.raw_one_slice(
+            x,
+            s,
         )
 
         low = torch.quantile(
             u,
-            float(
-                config.gauge_lower_quantile
-            ),
+            float(config.gauge_lower_quantile),
         )
         high = torch.quantile(
             u,
-            float(
-                config.gauge_upper_quantile
-            ),
+            float(config.gauge_upper_quantile),
         )
 
         if (
@@ -1608,7 +1720,6 @@ def _refresh_gauge(
 
         model.coordinate_maps.gauge_low[s] = low
         model.coordinate_maps.gauge_high[s] = high
-
 
 def _balanced_batch(
     data,
@@ -2366,6 +2477,23 @@ def run_stage1a(
             f"Poisson model; unsupported alternative settings: {details}."
         )
 
+    coordinate_choice = (
+        str(config.coordinate_decoder),
+        str(config.gauge_mode),
+    )
+    supported_coordinate_choices = {
+        ("independent", "per_tissue"),
+        ("shared_time", "per_tissue"),
+        ("shared_time", "global"),
+    }
+    if coordinate_choice not in supported_coordinate_choices:
+        raise ValueError(
+            "Unsupported Stage-1 coordinate choice "
+            f"{coordinate_choice!r}. Supported choices are "
+            "independent/per_tissue, shared_time/per_tissue, and "
+            "shared_time/global."
+        )
+
     output_dir = (
         Path(config.output_dir)
         .expanduser()
@@ -2391,6 +2519,12 @@ def run_stage1a(
         torch.backends.cudnn.benchmark = True
 
     print("Stage 1a method:", METHOD_VERSION)
+    print(
+        "Coordinate decoder:",
+        config.coordinate_decoder,
+        "| gauge:",
+        config.gauge_mode,
+    )
     print("Output:", output_dir)
     print("Device:", device)
 
@@ -3063,6 +3197,12 @@ def run_stage1a(
                 ),
             "expression_parameterization":
                 "direct_fisher_flat_psi",
+            "coordinate_decoder":
+                str(config.coordinate_decoder),
+            "coordinate_gauge":
+                str(config.gauge_mode),
+            "coordinate_hidden":
+                list(config.coord_hidden),
             **diagnostic_summary,
         }
 
