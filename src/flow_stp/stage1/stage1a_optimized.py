@@ -8,7 +8,7 @@ but raises the AdamW learning rate from 1e-3 to 2e-3.
 The preset was introduced after restart diagnostics showed that the selected
 Stage 1a objective can admit competing coordinate basins.  Keeping this as a
 separate preset makes the optimization change explicit while preserving the
-original library-offset-only defaults for reproducibility.
+original Fisher-flat defaults for reproducibility.
 """
 
 from __future__ import annotations
@@ -26,15 +26,15 @@ from .stage1a import (
 )
 
 
-OPTIMIZATION_PRESET_VERSION = "stage1a_library_offset_high_lr_v1"
+OPTIMIZATION_PRESET_VERSION = "stage1a_library_offset_fisher_flat_high_lr_v1"
 
 
 @dataclass(frozen=True)
 class Stage1AOptimizedRunConfig(Stage1ARunConfig):
-    """Library-offset-only Stage 1a with the high-mobility optimizer preset."""
+    """Direct-Fisher-flat Stage 1a with the high-mobility optimizer preset."""
 
     output_dir: Path = Path(
-        "flow_stp_stage1a_library_offset_high_lr_v1"
+        "flow_stp_stage1a_library_offset_fisher_flat_high_lr_v1"
     )
 
     # The scientific model is unchanged; this is the selected optimizer change.
@@ -68,7 +68,7 @@ def _validate_selected_model(config: Stage1ARunConfig) -> None:
         )
         raise ValueError(
             "run_stage1a_optimized is reserved for the selected "
-            f"library-offset-only scientific model; got {details}."
+            f"library-offset Fisher-flat scientific model; got {details}."
         )
 
 
