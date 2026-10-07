@@ -1,18 +1,27 @@
-"""Selected Stage 1a anatomical-axis implementation.
+"""Selected Stage 1a anatomical-axis model in Fisher-flat coordinates.
 
-The primary Stage 1a model is the minimal library-offset model selected after
-real-data ablations on the Qian PFC atlas:
+The active Stage 1 model is the minimal library-offset Poisson model, with the
+expression field parameterized directly in independent-Poisson Fisher-flat
+coordinates:
 
     u_i(x, y) = raw spatial neural field
     z_i       = robust affine normalization of u_i on fixed spatial references
-    log mu_gc = beta_g + F_g(z_c, t_i) + log_library_size_c
+    Psi(z,t)  = b + f_theta(z,t)
+    E(z,t)    = Psi(z,t)^2 / 4
+    Y_cg      ~ Poisson(L_c E_g(z_c,t_c))
+
+where L_c is the cell library-size exposure.  The neural decoder therefore
+estimates Psi = 2 sqrt(E) directly rather than estimating log E and applying a
+nonlinear square-root transform only after fitting.
+
+The positive Fisher branch is selected by initialization: the trainable
+baseline is initialized to 2 sqrt(mean library-normalized expression), while
+the residual decoder head starts near zero.  The likelihood itself remains the
+ordinary Poisson likelihood.
 
 The coordinate regularizers, direct-coverage endpoints, and slice nuisance
-effects used in earlier experiments are retained as optional ablation controls,
-but are disabled by default.
-
-The historical names FlowSTPConfig / FlowSTPModel are retained so downstream
-Stage 1b code can continue using result.model.coord_maps.
+effects from earlier experiments remain present only as disabled compatibility
+controls; the public runner rejects them for the selected model.
 """
 
 from __future__ import annotations
@@ -33,7 +42,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-METHOD_VERSION = "stage1a_library_offset_v1"
+METHOD_VERSION = "stage1a_library_offset_fisher_flat_v1"
 Tensor = torch.Tensor
 
 
@@ -276,7 +285,7 @@ class SliceCoordinateMaps(nn.Module):
 
 
 class FlowSTPModel(nn.Module):
-    """Selected Stage 1a model; historical class name retained."""
+    """Selected Stage 1a model with a direct Fisher-flat expression field."""
 
     def __init__(self, config: FlowSTPConfig):
         super().__init__()
@@ -286,7 +295,14 @@ class FlowSTPModel(nn.Module):
 
         G = int(config.num_genes)
 
-        self.beta = nn.Parameter(torch.zeros(G))
+        # Direct Fisher-flat baseline.  It is initialized from the training
+        # data by run_stage1a before optimization begins.
+        self.psi_baseline = nn.Parameter(
+            torch.full(
+                (G,),
+                2.0,
+            )
+        )
 
         self.decoder = MLP(
             2,
@@ -294,6 +310,19 @@ class FlowSTPModel(nn.Module):
             config.decoder_hidden,
             "gelu",
         )
+
+        # Match the successful direct-Psi experiment: begin near a constant,
+        # positive Fisher branch and let the network learn a small residual
+        # field around it.
+        output_layer = self.decoder.net[-1]
+        if not isinstance(output_layer, nn.Linear):
+            raise TypeError("Decoder output layer must be nn.Linear.")
+        nn.init.normal_(
+            output_layer.weight,
+            mean=0.0,
+            std=1e-3,
+        )
+        nn.init.zeros_(output_layer.bias)
 
         rank = int(config.slice_effect_dim)
 
@@ -316,38 +345,85 @@ class FlowSTPModel(nn.Module):
         """Alias for the fitted anatomical coordinate maps."""
         return self.coordinate_maps
 
-    def log_expression(
+    @torch.no_grad()
+    def initialize_fisher_flat_baseline_(
+        self,
+        psi_baseline: Tensor,
+    ) -> None:
+        """Initialize the trainable direct-Psi baseline."""
+        value = psi_baseline.reshape(-1).to(
+            device=self.psi_baseline.device,
+            dtype=self.psi_baseline.dtype,
+        )
+        if value.numel() != self.psi_baseline.numel():
+            raise ValueError(
+                "psi_baseline must have one value per gene."
+            )
+        if not torch.isfinite(value).all():
+            raise ValueError("psi_baseline must be finite.")
+        if (value <= 0).any():
+            raise ValueError(
+                "psi_baseline must select the positive Fisher branch."
+            )
+        self.psi_baseline.copy_(value)
+
+    def fisher_flat(
         self,
         z: Tensor,
         time: Tensor,
     ) -> Tensor:
-        """Return the fitted biological log-expression field log E(z,t).
-
-        This intentionally excludes the library-size exposure offset used in
-        the Poisson observation model. Stage 2 differentiates this field.
-        """
+        """Return the directly estimated Psi(z,t) = 2 sqrt(E(z,t))."""
         zc = z.reshape(-1).to(
-            device=self.beta.device,
-            dtype=self.beta.dtype,
+            device=self.psi_baseline.device,
+            dtype=self.psi_baseline.dtype,
         )
         tc = time.reshape(-1).to(
-            device=self.beta.device,
-            dtype=self.beta.dtype,
+            device=self.psi_baseline.device,
+            dtype=self.psi_baseline.dtype,
         )
         if zc.shape[0] != tc.shape[0]:
             raise ValueError("z and time must have matching rows.")
+
         return (
-            self.beta[None, :]
-            + self.decoder(torch.stack([zc, tc], dim=1))
+            self.psi_baseline[None, :]
+            + self.decoder(
+                torch.stack(
+                    [zc, tc],
+                    dim=1,
+                )
+            )
         )
+
+    def psi(
+        self,
+        z: Tensor,
+        time: Tensor,
+    ) -> Tensor:
+        """Alias for the Fisher-flat field used by Stage 2."""
+        return self.fisher_flat(z, time)
 
     def expression(
         self,
         z: Tensor,
         time: Tensor,
     ) -> Tensor:
-        """Return E(z,t), excluding the library-size observation offset."""
-        return torch.exp(self.log_expression(z, time))
+        """Return E(z,t) = Psi(z,t)^2 / 4, excluding library exposure."""
+        psi = self.fisher_flat(z, time)
+        return 0.25 * psi.square()
+
+    def log_expression(
+        self,
+        z: Tensor,
+        time: Tensor,
+        *,
+        eps: float = 1e-8,
+    ) -> Tensor:
+        """Return log E(z,t) for compatibility; Stage 2 uses Psi directly."""
+        return torch.log(
+            self.expression(z, time).clamp_min(
+                float(eps)
+            )
+        )
 
     def nuisance_effect_matrix(
         self,
@@ -375,7 +451,7 @@ class FlowSTPModel(nn.Module):
         if effect is None:
             return torch.zeros(
                 (),
-                device=self.beta.device,
+                device=self.psi_baseline.device,
             )
 
         return effect.square().mean()
@@ -399,9 +475,13 @@ class FlowSTPModel(nn.Module):
             slice_idx,
         ).reshape(-1)
 
-        log_mu = self.log_expression(
+        psi = self.fisher_flat(
             z,
             time,
+        )
+        expression = 0.25 * psi.square()
+        log_mu = torch.log(
+            expression.clamp_min(1e-8)
         )
 
         if log_library_size is not None:
@@ -419,6 +499,8 @@ class FlowSTPModel(nn.Module):
 
         return {
             "z": z[:, None],
+            "psi": psi,
+            "expression": expression,
             "log_mu": log_mu,
         }
 
@@ -698,11 +780,12 @@ class FlowSTPModel(nn.Module):
 @dataclass(frozen=True)
 class Stage1ARunConfig:
     output_dir: Path = Path(
-        "flow_stp_stage1a_library_offset_v1"
+        "flow_stp_stage1a_library_offset_fisher_flat_v1"
     )
 
-    # Primary model: Poisson expression fit with a library-size exposure
-    # offset. Optional coordinate/nuisance regularizers are off by default.
+    # Primary model: direct Fisher-flat Psi(z,t) fit through a Poisson
+    # likelihood with a library-size exposure offset. Optional
+    # coordinate/nuisance regularizers are off by default.
     submersion_weight: float = 0.0
     scale_variation_weight: float = 0.0
     coverage_prior_weight: float = 0.0
@@ -1049,6 +1132,69 @@ def _build_library_offsets(
         )
 
     return offsets
+
+
+def _initial_fisher_flat_baseline(
+    data,
+    *,
+    chunk_size: int = 65536,
+) -> Tensor:
+    """Estimate a positive Psi baseline from library-normalized training means."""
+    total = torch.zeros(
+        int(data["n_genes"]),
+        dtype=torch.float64,
+    )
+    n_total = 0
+
+    for s in range(
+        int(data["n_slices"])
+    ):
+        train = data["train_idx"][s]
+        counts = data["counts"][s]
+        log_library = data["log_library"][s]
+
+        for start in range(
+            0,
+            train.numel(),
+            int(chunk_size),
+        ):
+            idx = train[
+                start:
+                start + int(chunk_size)
+            ]
+            y = counts[idx].to(
+                dtype=torch.float64
+            )
+            inverse_exposure = torch.exp(
+                -log_library[idx].to(
+                    dtype=torch.float64
+                )
+            )
+
+            total += (
+                y
+                * inverse_exposure[:, None]
+            ).sum(dim=0)
+            n_total += int(
+                idx.numel()
+            )
+
+    if n_total <= 0:
+        raise RuntimeError(
+            "Cannot initialize Fisher-flat baseline from empty training data."
+        )
+
+    mean_expression = (
+        total
+        / float(n_total)
+    ).clamp_min(1e-4)
+
+    return (
+        2.0
+        * torch.sqrt(
+            mean_expression
+        )
+    ).float()
 
 
 def _prepare_data(
@@ -2463,6 +2609,12 @@ def run_stage1a(
             .to(device)
         )
 
+        model.initialize_fisher_flat_baseline_(
+            _initial_fisher_flat_baseline(
+                data
+            )
+        )
+
         _refresh_gauge(
             model,
             data,
@@ -2909,6 +3061,8 @@ def run_stage1a(
                 int(
                     config.slice_effect_dim
                 ),
+            "expression_parameterization":
+                "direct_fisher_flat_psi",
             **diagnostic_summary,
         }
 
