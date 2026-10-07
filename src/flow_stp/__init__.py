@@ -1,4 +1,4 @@
-"""Flow-STP: anatomical-axis learning followed by derived Fisher dynamics."""
+"""Flow-STP: direct Fisher-flat anatomical-axis estimation and dynamics."""
 
 __version__ = "0.0.0"
 
