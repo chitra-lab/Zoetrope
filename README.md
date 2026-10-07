@@ -4,7 +4,7 @@ This repository contains one active scientific pipeline.
 
 ## Stage 1 — anatomical axis and Fisher-flat expression field
 
-`flow_stp.stage1` learns tissue-specific anatomical coordinates together with
+`flow_stp.stage1` learns anatomical coordinates together with
 a shared neural expression field parameterized directly in independent-Poisson
 Fisher-flat coordinates:
 
@@ -25,6 +25,26 @@ The direct-Psi baseline is initialized on the positive branch from the
 library-normalized training gene means, with the neural residual head initialized
 near zero. `stage1a_optimized.py` is the same scientific model with the
 empirically selected 2e-3 learning-rate preset.
+
+Stage 1 has exactly three coordinate-decoder choices; all other scientific
+components and defaults are held fixed:
+
+1. **Independent / per-tissue gauge** (existing baseline):
+   `z_i = alpha_i(x,y)`, with a robust affine gauge refreshed separately in
+   each tissue.
+2. **Shared-time / per-tissue gauge**:
+   `z = alpha(x,y,t)`, but with the same per-tissue robust affine gauge as the
+   baseline.
+3. **Shared-time / global gauge**:
+   `z = alpha(x,y,t)`, with one robust affine ruler computed from pooled fixed
+   reference points across all tissues.
+
+The shared variants are exposed as
+`run_stage1a_shared_time_per_tissue` and
+`run_stage1a_shared_time_global`. This keeps real-data testing focused on the
+coordinate-decoder/gauge structure while leaving the library-offset Poisson
+likelihood, direct-Psi expression decoder, optimizer preset, outputs, and Stage 2
+interface unchanged.
 
 ## Stage 2 — derived dynamics
 
