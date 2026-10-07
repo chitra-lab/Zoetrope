@@ -1,12 +1,8 @@
 """Stage 2: derivatives of E(z,t), closed-form Fisher velocity, and RK4 flow.
 
-Stage 2 has no separately learned neural model. It differentiates the
-Stage-1 biological expression field E(z,t), computes
-
-    V(z,t) = - <Psi_z, Psi_t> / <Psi_z, Psi_z>,
-    Psi = 2 sqrt(E),
-
-and integrates dF/dt = V(F,t) with fourth-order Runge-Kutta.
+Stage 2 has no separately learned trajectory model. It differentiates the
+Stage-1 biological mean-expression field E(z,t), computes the Fisher-projection
+velocity in closed form, and integrates dF/dt = V(F,t) with RK4.
 """
 
 from __future__ import annotations
@@ -60,20 +56,23 @@ def field_derivatives(
     *,
     create_graph: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Return (log_E, Psi, Psi_z, Psi_t) in Poisson Fisher coordinates.
+    """Return (E, E_z, E_t, log_E).
 
-    If the field provides an analytic log_mean_derivatives method it is used
-    directly. Otherwise derivatives are obtained by autograd, which is the
-    path used by the neural Stage-1 expression decoder.
+    If the field supplies analytic log-mean derivatives, they are converted to
+    mean-scale derivatives. Otherwise E is differentiated directly by autograd.
     """
     analytic = getattr(field, "log_mean_derivatives", None)
     if analytic is not None:
         zc = _as_col(z)
         tc = _as_col(time)
         log_e, eta_z, eta_t = analytic(zc, tc)
-        sqrt_e = torch.exp(0.5 * log_e)
-        psi = 2.0 * sqrt_e
-        return log_e, psi, sqrt_e * eta_z, sqrt_e * eta_t
+        expression = torch.exp(log_e)
+        return (
+            expression,
+            expression * eta_z,
+            expression * eta_t,
+            log_e,
+        )
 
     zc = _as_col(z).detach().clone().requires_grad_(True)
     tc = _as_col(time).detach().clone().requires_grad_(True)
@@ -84,34 +83,38 @@ def field_derivatives(
     if log_e.ndim != 2 or log_e.shape[0] != zc.shape[0]:
         raise ValueError("Expression field must return shape [N, genes].")
 
-    psi = 2.0 * torch.exp(0.5 * log_e)
-    psi_z = _component_derivative(
-        psi,
+    expression = torch.exp(log_e)
+    dE_dz = _component_derivative(
+        expression,
         zc,
         create_graph=create_graph,
     )
-    psi_t = _component_derivative(
-        psi,
+    dE_dt = _component_derivative(
+        expression,
         tc,
         create_graph=create_graph,
     )
-    return log_e, psi, psi_z, psi_t
+    return expression, dE_dz, dE_dt, log_e
 
 
 def derived_velocity(
-    psi_z: Tensor,
-    psi_t: Tensor,
+    expression: Tensor,
+    dE_dz: Tensor,
+    dE_dt: Tensor,
     *,
     eps: float = 1e-8,
 ) -> tuple[Tensor, Tensor]:
-    """Closed-form minimum-expression-change velocity and observability.
+    """Return the Fisher closed-form velocity and tangent information.
 
-    Returns (V, <Psi_z,Psi_z>).
+    V = - <E_z,E_t>_I / <E_z,E_z>_I, with
+    <u,v>_I = sum_g u_g v_g / E_g.
     """
-    if psi_z.shape != psi_t.shape:
-        raise ValueError("psi_z and psi_t must have matching shapes.")
-    numerator = (psi_z * psi_t).sum(dim=1, keepdim=True)
-    tangent_energy = psi_z.square().sum(dim=1, keepdim=True)
+    if expression.shape != dE_dz.shape or expression.shape != dE_dt.shape:
+        raise ValueError("expression, dE_dz, and dE_dt must match in shape.")
+
+    weight = expression.clamp_min(float(eps)).reciprocal()
+    numerator = (dE_dz * dE_dt * weight).sum(dim=1, keepdim=True)
+    tangent_energy = (dE_dz.square() * weight).sum(dim=1, keepdim=True)
     velocity = -numerator / (tangent_energy + float(eps))
     return velocity, tangent_energy
 
@@ -122,9 +125,8 @@ class LocalDynamics:
     time: Tensor
     log_expression: Tensor
     expression: Tensor
-    fisher_embedding: Tensor
-    dpsi_dz: Tensor
-    dpsi_dt: Tensor
+    dE_dz: Tensor
+    dE_dt: Tensor
     velocity: Tensor
     residual: Tensor
     residual_speed: Tensor
@@ -143,32 +145,31 @@ def estimate_local_dynamics(
     eps: float = 1e-8,
     create_graph: bool = False,
 ) -> LocalDynamics:
-    """Differentiate E(z,t) and compute the closed-form Fisher velocity."""
-    log_e, psi, psi_z, psi_t = field_derivatives(
+    """Estimate E_z and E_t, then compute the closed-form Fisher velocity."""
+    expression, dE_dz, dE_dt, log_e = field_derivatives(
         field,
         z,
         time,
         create_graph=create_graph,
     )
     velocity, tangent_energy = derived_velocity(
-        psi_z,
-        psi_t,
+        expression,
+        dE_dz,
+        dE_dt,
         eps=eps,
     )
-    residual = psi_t + velocity * psi_z
-    residual_speed = torch.linalg.vector_norm(
-        residual,
-        dim=1,
-        keepdim=True,
+    residual = dE_dt + velocity * dE_dz
+    weight = expression.clamp_min(float(eps)).reciprocal()
+    residual_speed = torch.sqrt(
+        (residual.square() * weight).sum(dim=1, keepdim=True)
     )
     return LocalDynamics(
         z=_as_col(z),
         time=_as_col(time),
         log_expression=log_e,
-        expression=torch.exp(log_e),
-        fisher_embedding=psi,
-        dpsi_dz=psi_z,
-        dpsi_dt=psi_t,
+        expression=expression,
+        dE_dz=dE_dz,
+        dE_dt=dE_dt,
         velocity=velocity,
         residual=residual,
         residual_speed=residual_speed,
@@ -183,7 +184,7 @@ def velocity_field(
     *,
     eps: float = 1e-8,
 ) -> Tensor:
-    """Evaluate V(z,t) from Stage-1 expression derivatives."""
+    """Evaluate V(z,t) from the Stage-1 expression field."""
     return estimate_local_dynamics(
         field,
         z,
@@ -195,10 +196,7 @@ def velocity_field(
 
 @dataclass(frozen=True)
 class FlowTrajectory:
-    """RK4 solution of dF/dt = V(F,t).
-
-    position[k, j] is F(a_j, time[k]).
-    """
+    """RK4 solution of dF/dt = V(F,t)."""
 
     time: Tensor
     position: Tensor
@@ -229,18 +227,11 @@ def integrate_flow_rk4(
 
     times = [torch.full_like(z, float(t0))]
     positions = [z.clone()]
-    velocities = [
-        velocity_field(field, z, times[-1], eps=eps)
-    ]
+    velocities = [velocity_field(field, z, times[-1], eps=eps)]
 
     def v(z_state: Tensor, t_scalar: float) -> Tensor:
         tt = torch.full_like(z_state, float(t_scalar))
-        return velocity_field(
-            field,
-            z_state,
-            tt,
-            eps=eps,
-        )
+        return velocity_field(field, z_state, tt, eps=eps)
 
     for step in range(n_steps):
         t = float(t0) + step * dt
@@ -249,16 +240,12 @@ def integrate_flow_rk4(
         k3 = v(z + 0.5 * dt * k2, t + 0.5 * dt)
         k4 = v(z + dt * k3, t + dt)
 
-        z = z + (dt / 6.0) * (
-            k1 + 2.0 * k2 + 2.0 * k3 + k4
-        )
+        z = z + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
         tt = torch.full_like(z, t + dt)
         times.append(tt)
         positions.append(z.clone())
-        velocities.append(
-            velocity_field(field, z, tt, eps=eps)
-        )
+        velocities.append(velocity_field(field, z, tt, eps=eps))
 
     return FlowTrajectory(
         time=torch.stack([x[:, 0] for x in times], dim=0),

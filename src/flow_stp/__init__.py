@@ -1,6 +1,6 @@
 """Flow-STP: anatomical-axis learning followed by derived Fisher dynamics."""
 
-__version__ = "0.1.0"
+__version__ = "0.0.0"
 
 from .stage1 import (
     METHOD_VERSION,

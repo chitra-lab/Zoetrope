@@ -1,29 +1,24 @@
-# Stage 2: derived Fisher dynamics
+# Stage 2: derivative-based Fisher dynamics
 
-Stage 2 does not fit a second neural trajectory model. It consumes the
-biological expression field E(z,t) learned in Stage 1.
+Stage 2 does not fit a second trajectory model. It consumes E(z,t) learned in
+Stage 1, estimates E_z and E_t, and computes
 
-For independent Poisson means, define Fisher-flat coordinates
+V(z,t) = - <E_z,E_t>_I / <E_z,E_z>_I,
 
-Psi(z,t) = 2 sqrt(E(z,t)).
+where the independent-Poisson Fisher inner product is
 
-Stage 2 differentiates the learned field to obtain Psi_z and Psi_t, then
-computes the local anatomical velocity in closed form:
+<u,v>_I = sum_g u_g v_g / E_g.
 
-V(z,t) = - <Psi_z, Psi_t> / <Psi_z, Psi_z>.
+This is equivalent to the Euclidean projection formula in
+Psi = 2 sqrt(E) coordinates.
 
-Equivalently, this is the scalar v minimizing ||Psi_t + v Psi_z||^2. The
-denominator is retained as an observability diagnostic.
-
-The anatomical flow map solves
+The anatomical flow map then solves
 
 dF(a,t)/dt = V(F(a,t),t), with F(a,0) = a,
 
-and is integrated numerically with classical fourth-order Runge-Kutta (RK4).
+using classical fourth-order Runge-Kutta (RK4).
 
-Typical use with the Stage-1 result:
-
-    from flow_stp.stage2 import estimate_local_dynamics, integrate_flow_rk4
+Typical use:
 
     field = stage1_result.model.log_expression
     local = estimate_local_dynamics(field, z, t)

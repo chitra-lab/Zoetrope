@@ -7,13 +7,12 @@ from flow_stp.stage2 import (
 
 
 def _linear_log_expression(z, time):
-    # One-gene field with eta(z,t) = z - 2t.
-    # Because Psi_z and Psi_t share the same positive factor,
-    # V = -eta_t / eta_z = 2 everywhere.
+    # eta(z,t) = z - 2t, so E_z = E and E_t = -2E.
+    # The Fisher closed form therefore gives V = 2 everywhere.
     return z - 2.0 * time
 
 
-def test_closed_form_velocity_from_expression_derivatives():
+def test_closed_form_velocity_from_E_derivatives():
     z = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.float64)
     t = torch.tensor([[0.0], [0.3], [0.7]], dtype=torch.float64)
 
@@ -31,10 +30,14 @@ def test_closed_form_velocity_from_expression_derivatives():
         rtol=1e-10,
     )
 
-    inner = (result.residual * result.dpsi_dz).sum(dim=1)
+    fisher_inner = (
+        result.residual
+        * result.dE_dz
+        / result.expression
+    ).sum(dim=1)
     assert torch.allclose(
-        inner,
-        torch.zeros_like(inner),
+        fisher_inner,
+        torch.zeros_like(fisher_inner),
         atol=1e-10,
         rtol=1e-10,
     )
