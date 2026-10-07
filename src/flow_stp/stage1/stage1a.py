@@ -2700,6 +2700,19 @@ def run_stage1a(
             )
         )
 
+        if (
+            saved_model_config.coordinate_decoder
+            != str(config.coordinate_decoder)
+            or saved_model_config.gauge_mode
+            != str(config.gauge_mode)
+        ):
+            raise RuntimeError(
+                "Saved Stage-1 model uses coordinate choice "
+                f"{saved_model_config.coordinate_decoder}/"
+                f"{saved_model_config.gauge_mode}, but the requested "
+                f"run uses {config.coordinate_decoder}/{config.gauge_mode}."
+            )
+
         model = (
             FlowSTPModel(
                 saved_model_config
@@ -2831,6 +2844,23 @@ def run_stage1a(
                 raise RuntimeError(
                     "Checkpoint belongs to a different "
                     "Stage 1a method."
+                )
+
+            checkpoint_model_config = FlowSTPConfig(
+                **checkpoint["model_config"]
+            )
+            if (
+                checkpoint_model_config.coordinate_decoder
+                != str(config.coordinate_decoder)
+                or checkpoint_model_config.gauge_mode
+                != str(config.gauge_mode)
+            ):
+                raise RuntimeError(
+                    "Checkpoint uses coordinate choice "
+                    f"{checkpoint_model_config.coordinate_decoder}/"
+                    f"{checkpoint_model_config.gauge_mode}, but the "
+                    f"requested run uses {config.coordinate_decoder}/"
+                    f"{config.gauge_mode}."
                 )
 
             model.load_state_dict(
