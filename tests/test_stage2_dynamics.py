@@ -6,18 +6,25 @@ from flow_stp.stage2 import (
 )
 
 
-def _linear_log_expression(z, time):
-    # eta(z,t) = z - 2t, so E_z = E and E_t = -2E.
-    # The Fisher closed form therefore gives V = 2 everywhere.
-    return z - 2.0 * time
+def _linear_fisher_flat(z, time):
+    # Positive one-gene Fisher-flat field:
+    # Psi(z,t) = 4 + z - 2t.
+    # Hence Psi_z = 1 and Psi_t = -2, so V = 2 everywhere.
+    return 4.0 + z - 2.0 * time
 
 
-def test_closed_form_velocity_from_E_derivatives():
-    z = torch.tensor([[0.1], [0.4], [0.8]], dtype=torch.float64)
-    t = torch.tensor([[0.0], [0.3], [0.7]], dtype=torch.float64)
+def test_closed_form_velocity_from_direct_fisher_flat_derivatives():
+    z = torch.tensor(
+        [[0.1], [0.4], [0.8]],
+        dtype=torch.float64,
+    )
+    t = torch.tensor(
+        [[0.0], [0.3], [0.7]],
+        dtype=torch.float64,
+    )
 
     result = estimate_local_dynamics(
-        _linear_log_expression,
+        _linear_fisher_flat,
         z,
         t,
         eps=0.0,
@@ -30,16 +37,26 @@ def test_closed_form_velocity_from_E_derivatives():
         rtol=1e-10,
     )
 
-    fisher_inner = (
+    euclidean_inner = (
         result.residual
-        * result.dE_dz
-        / result.expression
+        * result.dpsi_dz
     ).sum(dim=1)
+
     assert torch.allclose(
-        fisher_inner,
-        torch.zeros_like(fisher_inner),
+        euclidean_inner,
+        torch.zeros_like(
+            euclidean_inner
+        ),
         atol=1e-10,
         rtol=1e-10,
+    )
+
+    assert torch.allclose(
+        result.expression,
+        0.25
+        * result.fisher_flat.square(),
+        atol=1e-12,
+        rtol=1e-12,
     )
 
 
@@ -48,8 +65,9 @@ def test_rk4_recovers_constant_velocity_flow():
         [[-0.5], [0.0], [0.75]],
         dtype=torch.float64,
     )
+
     trajectory = integrate_flow_rk4(
-        _linear_log_expression,
+        _linear_fisher_flat,
         anchors,
         t0=0.0,
         t1=0.6,
@@ -57,7 +75,11 @@ def test_rk4_recovers_constant_velocity_flow():
         eps=0.0,
     )
 
-    expected = anchors[:, 0] + 1.2
+    expected = (
+        anchors[:, 0]
+        + 1.2
+    )
+
     assert torch.allclose(
         trajectory.final_position,
         expected,
