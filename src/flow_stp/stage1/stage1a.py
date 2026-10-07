@@ -313,8 +313,41 @@ class FlowSTPModel(nn.Module):
 
     @property
     def coord_maps(self) -> SliceCoordinateMaps:
-        """Backward-compatible alias used by Stage 1b."""
+        """Alias for the fitted anatomical coordinate maps."""
         return self.coordinate_maps
+
+    def log_expression(
+        self,
+        z: Tensor,
+        time: Tensor,
+    ) -> Tensor:
+        """Return the fitted biological log-expression field log E(z,t).
+
+        This intentionally excludes the library-size exposure offset used in
+        the Poisson observation model. Stage 2 differentiates this field.
+        """
+        zc = z.reshape(-1).to(
+            device=self.beta.device,
+            dtype=self.beta.dtype,
+        )
+        tc = time.reshape(-1).to(
+            device=self.beta.device,
+            dtype=self.beta.dtype,
+        )
+        if zc.shape[0] != tc.shape[0]:
+            raise ValueError("z and time must have matching rows.")
+        return (
+            self.beta[None, :]
+            + self.decoder(torch.stack([zc, tc], dim=1))
+        )
+
+    def expression(
+        self,
+        z: Tensor,
+        time: Tensor,
+    ) -> Tensor:
+        """Return E(z,t), excluding the library-size observation offset."""
+        return torch.exp(self.log_expression(z, time))
 
     def nuisance_effect_matrix(
         self,
@@ -366,11 +399,9 @@ class FlowSTPModel(nn.Module):
             slice_idx,
         ).reshape(-1)
 
-        log_mu = (
-            self.beta[None, :]
-            + self.decoder(
-                torch.stack([z, time], dim=1)
-            )
+        log_mu = self.log_expression(
+            z,
+            time,
         )
 
         if log_library_size is not None:
@@ -2163,6 +2194,31 @@ def run_stage1a(
         if config is None
         else config
     )
+
+    selected_model_settings = {
+        "use_library_size_offset": True,
+        "submersion_weight": 0.0,
+        "scale_variation_weight": 0.0,
+        "coverage_prior_weight": 0.0,
+        "nuisance_weight": 0.0,
+        "slice_effect_dim": 0,
+        "max_missing_each_end": 0.0,
+        "initial_missing": 0.0,
+    }
+    mismatches = {
+        name: (getattr(config, name), expected)
+        for name, expected in selected_model_settings.items()
+        if getattr(config, name) != expected
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{name}={actual!r} (expected {expected!r})"
+            for name, (actual, expected) in mismatches.items()
+        )
+        raise ValueError(
+            "Stage 1 now contains only the selected library-size-offset "
+            f"Poisson model; unsupported alternative settings: {details}."
+        )
 
     output_dir = (
         Path(config.output_dir)

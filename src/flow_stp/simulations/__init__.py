@@ -1,11 +1,5 @@
-"""Simulation utilities for Flow-STP."""
+"""Simulation utilities retained for data-generating benchmarks."""
 
-from .simulated_atlas_positive_control import (
-    SimulationConfig,
-    SimulationResult,
-    run_simulation,
-    save_simulation,
-)
 from .benchmark_dgp import (
     BenchmarkSimulationConfig,
     BenchmarkSimulationResult,
@@ -16,10 +10,6 @@ from .benchmark_dgp import (
 )
 
 __all__ = [
-    "SimulationConfig",
-    "SimulationResult",
-    "run_simulation",
-    "save_simulation",
     "BenchmarkSimulationConfig",
     "BenchmarkSimulationResult",
     "BenchmarkTruth",
