@@ -18,6 +18,11 @@ from .stage2 import (
     field_derivatives,
     integrate_flow_rk4,
     velocity_field,
+    RefinementConfig,
+    RefinedVelocityField,
+    RefinementResult,
+    fit_trajectory_velocity,
+    physical_velocity,
 )
 
 __all__ = [
@@ -26,4 +31,6 @@ __all__ = [
     "FlowTrajectory", "LocalDynamics", "field_derivatives",
     "derived_velocity", "estimate_local_dynamics", "velocity_field",
     "integrate_flow_rk4",
+    "RefinementConfig", "RefinedVelocityField", "RefinementResult",
+    "fit_trajectory_velocity", "physical_velocity",
 ]

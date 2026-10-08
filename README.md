@@ -72,6 +72,42 @@ trajectory training. Physical velocity requires a physical-coordinate
 interpretation/inversion of the learned anatomical map; `V` by itself is
 velocity in learned `z` units.
 
+
+### Optional no-flux Stage-2 trajectory refinement
+
+The original Fisher projection and RK4 flow remain unchanged. An **optional**
+postprocessor fits a shared smooth, low-dimensional ODE to trajectories inferred
+from the Fisher flow. The default no-flux field is
+
+```text
+v_refined(z,t) = z(1-z) * sum_ij theta_ij Bernstein_i^3(z) Bernstein_j^3(t)
+```
+
+with coefficients fitted by minimizing integrated-trajectory position error plus
+a second-difference smoothness penalty. The synthetic no-rotation benchmark
+improved held-out instantaneous migration velocity NRMSE (0.950 to 0.221) and
+physical migration displacement NRMSE (0.234 to 0.0678). These results depend on
+the simulated tissue's correct material-boundary assumption and known geometry.
+
+```python
+from flow_stp.stage2 import RefinementConfig, fit_trajectory_velocity
+
+# fisher_positions: [n_times, n_anchors], in ONE consistent bounded
+# material anatomical coordinate. Values outside the fitted gauge must
+# be registered/mapped before refinement.
+fit = fit_trajectory_velocity(
+    fisher_positions, times, config=RefinementConfig(no_flux=True)
+)
+refined_flow = fit.field.integrate(initial_material_z, times)
+instantaneous_velocity = fit.field.velocity(material_z, time)
+```
+
+For XY physical velocity, `physical_velocity(fit.field, u, z, t,
+dG_dz=..., dG_dt=...)` returns relative migration velocity and total velocity.
+Geometry identification and inverse mapping from XY to (u,z) are not performed
+by this module; known synthetic geometry was used in the benchmark. A no-flux
+boundary is inappropriate if actual material migration crosses the endpoints.
+
 ## Layout
 
 - `src/flow_stp/stage1/stage1a.py`: active selected log-E shared model
