@@ -81,7 +81,7 @@ def test_lagrangian_expression_is_affine_in_time():
     velocity = result.truth.material_velocity.astype(float)
     np.testing.assert_allclose(
         velocity,
-        velocity[0][None, :, :],
+        np.broadcast_to(velocity[0][None, :, :], velocity.shape),
         atol=2e-6,
         rtol=2e-6,
     )
@@ -119,3 +119,4 @@ def test_simulation_is_reproducible():
         b.counts.drop(columns=["cell_id"]).to_numpy(),
     )
     np.testing.assert_allclose(a.obs[["x", "y"]], b.obs[["x", "y"]])
+

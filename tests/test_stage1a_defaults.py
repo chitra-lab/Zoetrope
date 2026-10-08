@@ -21,11 +21,6 @@ def test_selected_defaults():
     assert cfg.coord_hidden == (64, 64)
     assert cfg.decoder_hidden == (128, 128)
     assert cfg.use_library_size_offset is True
-    assert cfg.submersion_weight == 0.0
-    assert cfg.scale_variation_weight == 0.0
-    assert cfg.coverage_prior_weight == 0.0
-    assert cfg.nuisance_weight == 0.0
-    assert cfg.slice_effect_dim == 0
 
 
 @pytest.mark.parametrize(
@@ -109,3 +104,4 @@ def test_archived_coordinate_modes_cannot_be_selected_from_active_runner(tmp_pat
                 gauge_mode="per_tissue",
             ),
         )
+

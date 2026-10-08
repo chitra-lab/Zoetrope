@@ -2,8 +2,8 @@
 
 This simulator is the method-independent benchmark for comparing Flow-STP with
 more flexible spatial trajectory-inference methods such as STORIES and stVCR.
-It is intentionally separate from `simulated_atlas_positive_control`, whose job
-is to verify exact recovery under the Fisher-Lagrangian model itself.
+The simpler `flow_stp.simulations.logistic_displacement` benchmark checks
+physical displacement recovery under a known logistic material flow.
 
 ## Scientific role
 
@@ -121,3 +121,4 @@ save_benchmark_simulation(result, "benchmark_structured")
 The main paper benchmark should use one canonical configuration and vary one
 assumption or sampling axis at a time rather than taking a full factorial over
 all simulation parameters.
+

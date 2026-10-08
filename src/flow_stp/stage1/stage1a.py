@@ -67,9 +67,7 @@ class MLP(nn.Module):
 class FlowSTPConfig:
     """Model configuration.
 
-    Historical fields are retained for backward compatibility with older
-    configuration construction. The old flow/q expression model is no longer
-    used by Stage 1a.
+    Only the selected shared-coordinate log-expression model is configurable.
     """
 
     num_slices: int
@@ -83,24 +81,10 @@ class FlowSTPConfig:
 
     coord_hidden: Tuple[int, ...] = (64, 64)
     decoder_hidden: Tuple[int, ...] = (128, 128)
-    slice_effect_dim: int = 0
 
     coord_grad_min: float = 0.05
     coord_grad_eps: float = 1e-12
     scale_denominator_eps: float = 1e-8
-
-    coverage_prior_sd: float = 0.05
-    max_missing_each_end: float = 0.0
-    initial_missing: float = 0.0
-
-    # Historical compatibility fields.
-    field_hidden: Tuple[int, ...] = (128, 128)
-    n_flow_steps: int = 16
-    coord_min_width: float = 0.05
-    q_epsilon: float = 0.0
-    clamp_eps: float = 1e-5
-    coord_submersion_weight: float = 0.0
-    coord_grad_samples_per_slice: Optional[int] = 128
 
 
 class SliceCoordinateMaps(nn.Module):
@@ -108,10 +92,10 @@ class SliceCoordinateMaps(nn.Module):
         super().__init__()
 
         self.num_slices = int(config.num_slices)
-        self.coverage_prior_sd = float(config.coverage_prior_sd)
-        self.max_missing_each_end = float(config.max_missing_each_end)
         self.coordinate_decoder = str(config.coordinate_decoder)
         self.gauge_mode = str(config.gauge_mode)
+        if self.gauge_mode != "global":
+            raise ValueError("The selected coordinate model requires the global gauge.")
 
         slice_times = tuple(float(t) for t in config.slice_times)
         if len(slice_times) != self.num_slices:
@@ -125,7 +109,6 @@ class SliceCoordinateMaps(nn.Module):
         )
 
         if self.coordinate_decoder in ("shared_time", "shared_time_tissue"):
-            self.maps = nn.ModuleList()
             input_dim = 3 + (self.num_slices if self.coordinate_decoder == "shared_time_tissue" else 0)
             with torch.random.fork_rng(devices=[]):
                 torch.manual_seed(int(config.seed) + 704113)
@@ -147,19 +130,6 @@ class SliceCoordinateMaps(nn.Module):
                 "coordinate_decoder must be 'shared_time' or 'shared_time_tissue'; "
                 f"got {self.coordinate_decoder!r}."
             )
-
-        self.missing_left = nn.Parameter(
-            torch.full(
-                (self.num_slices,),
-                float(config.initial_missing),
-            )
-        )
-        self.missing_right = nn.Parameter(
-            torch.full(
-                (self.num_slices,),
-                float(config.initial_missing),
-            )
-        )
 
         # Detached robust affine gauge, refreshed by the runner.
         self.register_buffer(
@@ -196,49 +166,12 @@ class SliceCoordinateMaps(nn.Module):
             inputs.append(tissue_id)
         return self.shared_map(torch.cat(inputs, dim=1)).squeeze(-1)
 
-    def coverage_intervals(
-        self,
-    ) -> Tuple[Tensor, Tensor]:
-        return (
-            self.missing_left,
-            1.0 - self.missing_right,
-        )
 
-    def intervals(
-        self,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        """Stage 1b compatibility interface."""
-        a, b = self.coverage_intervals()
-        return a, b, b - a
-
-    def local_and_global_one_slice(
-        self,
-        coords: Tensor,
-        slice_id: int,
-    ) -> Tuple[Tensor, Tensor]:
-        u = self.raw_one_slice(coords, slice_id)
-
+    def one_slice(self, coords: Tensor, slice_id: int) -> Tensor:
+        raw = self.raw_one_slice(coords, slice_id)
         low = self.gauge_low[int(slice_id)]
-        high = self.gauge_high[int(slice_id)]
-        span = torch.clamp(high - low, min=1e-4)
-
-        z_local = (u - low) / span
-
-        a, b = self.coverage_intervals()
-        width = b[int(slice_id)] - a[int(slice_id)]
-        z_global = a[int(slice_id)] + width * z_local
-
-        return z_local, z_global
-
-    def one_slice(
-        self,
-        coords: Tensor,
-        slice_id: int,
-    ) -> Tensor:
-        return self.local_and_global_one_slice(
-            coords,
-            slice_id,
-        )[1]
+        span = torch.clamp(self.gauge_high[int(slice_id)] - low, min=1e-4)
+        return (raw - low) / span
 
     def forward(
         self,
@@ -248,7 +181,7 @@ class SliceCoordinateMaps(nn.Module):
         if coords.ndim != 2 or coords.shape[1] != 2:
             raise ValueError("coords must have shape [B,2].")
 
-        # Stage 1b sometimes calls coord_maps(coords, integer_slice_id).
+        # Evaluate one physical tissue or a batch of tissue indices.
         if isinstance(slice_idx, (int, np.integer)):
             return self.one_slice(
                 coords,
@@ -292,25 +225,6 @@ class SliceCoordinateMaps(nn.Module):
 
         return out[:, None]
 
-    def coverage_penalty(self) -> Tensor:
-        sd = max(self.coverage_prior_sd, 1e-12)
-
-        return 0.5 * (
-            (self.missing_left / sd).square()
-            + (self.missing_right / sd).square()
-        ).mean()
-
-    @torch.no_grad()
-    def project_endpoints_(self) -> None:
-        self.missing_left.clamp_(
-            0.0,
-            self.max_missing_each_end,
-        )
-        self.missing_right.clamp_(
-            0.0,
-            self.max_missing_each_end,
-        )
-
 
 class FlowSTPModel(nn.Module):
     """Shared-coordinate model: fit log E, derive Fisher-flat Psi."""
@@ -329,40 +243,6 @@ class FlowSTPModel(nn.Module):
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(int(config.seed) + 71718)
             self.decoder = MLP(2, G, config.decoder_hidden, "gelu")
-
-        rank = int(config.slice_effect_dim)
-
-        if rank > 0:
-            self.slice_embedding = nn.Embedding(
-                int(config.num_slices),
-                rank,
-            )
-            nn.init.zeros_(self.slice_embedding.weight)
-
-            self.nuisance_loadings = nn.Parameter(
-                0.01 * torch.randn(G, rank)
-            )
-        else:
-            self.slice_embedding = None
-            self.nuisance_loadings = None
-
-    @property
-    def coord_maps(self) -> SliceCoordinateMaps:
-        """Alias for the fitted anatomical coordinate maps."""
-        return self.coordinate_maps
-
-    @torch.no_grad()
-    def initialize_log_expression_baseline_(self, baseline: Tensor) -> None:
-        """Initialize log E intercept from library-normalized mean counts."""
-        value = baseline.reshape(-1).to(
-            device=self.log_expression_baseline.device,
-            dtype=self.log_expression_baseline.dtype,
-        )
-        if value.numel() != self.log_expression_baseline.numel():
-            raise ValueError("baseline must have one value per gene")
-        if not torch.isfinite(value).all():
-            raise ValueError("baseline must be finite")
-        self.log_expression_baseline.copy_(value)
 
     def log_expression(self, z: Tensor, time: Tensor) -> Tensor:
         """Learned eta(z,t)=log E(z,t), excluding cell library exposure."""
@@ -390,36 +270,6 @@ class FlowSTPModel(nn.Module):
     def psi(self, z: Tensor, time: Tensor) -> Tensor:
         return self.fisher_flat(z, time)
 
-    def nuisance_effect_matrix(
-        self,
-    ) -> Optional[Tensor]:
-        if (
-            self.slice_embedding is None
-            or self.nuisance_loadings is None
-        ):
-            return None
-
-        effect = (
-            self.slice_embedding.weight
-            @ self.nuisance_loadings.T
-        )
-
-        # z-independent nuisance cannot absorb the shared intercept.
-        return effect - effect.mean(
-            dim=0,
-            keepdim=True,
-        )
-
-    def nuisance_penalty(self) -> Tensor:
-        effect = self.nuisance_effect_matrix()
-
-        if effect is None:
-            return torch.zeros(
-                (),
-                device=self.log_expression_baseline.device,
-            )
-
-        return effect.square().mean()
 
     def forward(
         self,
@@ -454,10 +304,6 @@ class FlowSTPModel(nn.Module):
                 )
             )
 
-        nuisance = self.nuisance_effect_matrix()
-        if nuisance is not None:
-            log_mu = log_mu + nuisance[slice_idx]
-
         return {
             "z": z[:, None],
             "psi": psi,
@@ -480,259 +326,6 @@ class FlowSTPModel(nn.Module):
             reduction="mean",
         )
 
-    def coordinate_spatial_gradients(
-        self,
-        coords: Tensor,
-        slice_idx: Tensor,
-        *,
-        samples_per_slice: Optional[int] = None,
-        create_graph: bool = True,
-    ):
-        """Backward-compatible global-z gradient helper."""
-        slice_idx = slice_idx.long().reshape(-1)
-
-        selected = []
-        if samples_per_slice is None or int(samples_per_slice) <= 0:
-            selected = torch.arange(
-                len(coords),
-                device=coords.device,
-            )
-        else:
-            for s in torch.unique(
-                slice_idx,
-                sorted=True,
-            ):
-                idx = torch.nonzero(
-                    slice_idx == s,
-                    as_tuple=False,
-                ).flatten()
-
-                if idx.numel() > int(samples_per_slice):
-                    perm = torch.randperm(
-                        idx.numel(),
-                        device=idx.device,
-                    )[: int(samples_per_slice)]
-                    idx = idx[perm]
-
-                selected.append(idx)
-
-            selected = torch.cat(selected)
-
-        coords_reg = (
-            coords[selected]
-            .detach()
-            .clone()
-            .requires_grad_(True)
-        )
-        slice_reg = slice_idx[selected]
-
-        z = self.coordinate_maps(
-            coords_reg,
-            slice_reg,
-        ).reshape(-1)
-
-        grad = torch.autograd.grad(
-            z.sum(),
-            coords_reg,
-            create_graph=create_graph,
-            retain_graph=create_graph,
-            only_inputs=True,
-        )[0]
-
-        return (
-            z[:, None],
-            grad,
-            coords_reg,
-            slice_reg,
-        )
-
-    def coordinate_submersion_penalty(
-        self,
-        coords: Tensor,
-        slice_idx: Tensor,
-        *,
-        min_grad: Optional[float] = None,
-        samples_per_slice: Optional[int] = None,
-        create_graph: bool = True,
-    ):
-        """Coverage-invariant submersion penalty on local observed z."""
-        slice_idx = slice_idx.long().reshape(-1)
-
-        threshold = (
-            float(self.config.coord_grad_min)
-            if min_grad is None
-            else float(min_grad)
-        )
-
-        terms = []
-        norms = []
-
-        for s_tensor in torch.unique(
-            slice_idx,
-            sorted=True,
-        ):
-            s = int(s_tensor.item())
-            idx = torch.nonzero(
-                slice_idx == s_tensor,
-                as_tuple=False,
-            ).flatten()
-
-            if (
-                samples_per_slice is not None
-                and int(samples_per_slice) > 0
-                and idx.numel() > int(samples_per_slice)
-            ):
-                perm = torch.randperm(
-                    idx.numel(),
-                    device=idx.device,
-                )[: int(samples_per_slice)]
-                idx = idx[perm]
-
-            x = (
-                coords[idx]
-                .detach()
-                .clone()
-                .requires_grad_(True)
-            )
-
-            z_local, _ = (
-                self.coordinate_maps
-                .local_and_global_one_slice(
-                    x,
-                    s,
-                )
-            )
-
-            grad = torch.autograd.grad(
-                z_local.sum(),
-                x,
-                create_graph=create_graph,
-                retain_graph=create_graph,
-                only_inputs=True,
-            )[0]
-
-            norm = torch.sqrt(
-                grad.square().sum(dim=1)
-                + float(self.config.coord_grad_eps)
-            )
-
-            deficit = F.relu(
-                (threshold - norm)
-                / max(threshold, 1e-12)
-            )
-
-            terms.append(
-                deficit.square().mean()
-            )
-            norms.append(norm)
-
-        all_norm = torch.cat(norms)
-
-        stats = {
-            "grad_norm_mean": all_norm.mean().detach(),
-            "grad_norm_min": all_norm.min().detach(),
-            "grad_violation_fraction": (
-                (all_norm < threshold)
-                .float()
-                .mean()
-                .detach()
-            ),
-        }
-
-        return torch.stack(terms).mean(), stats
-
-    def coordinate_geometry_penalties(
-        self,
-        coords_by_slice,
-    ) -> Tuple[Tensor, Tensor]:
-        """Submersion on local z and relative scale variation on global z."""
-        sub_terms = []
-        scale_terms = []
-
-        for s, coords in enumerate(coords_by_slice):
-            x = (
-                coords.detach()
-                .clone()
-                .requires_grad_(True)
-            )
-
-            z_local, z_global = (
-                self.coordinate_maps
-                .local_and_global_one_slice(
-                    x,
-                    s,
-                )
-            )
-
-            grad_local = torch.autograd.grad(
-                z_local.sum(),
-                x,
-                create_graph=True,
-                retain_graph=True,
-                only_inputs=True,
-            )[0]
-
-            local_norm = torch.sqrt(
-                grad_local.square().sum(dim=1)
-                + float(self.config.coord_grad_eps)
-            )
-
-            threshold = max(
-                float(self.config.coord_grad_min),
-                1e-12,
-            )
-
-            deficit = F.relu(
-                (threshold - local_norm)
-                / threshold
-            )
-
-            sub_terms.append(
-                deficit.square().mean()
-            )
-
-            grad_global = torch.autograd.grad(
-                z_global.sum(),
-                x,
-                create_graph=True,
-                retain_graph=True,
-                only_inputs=True,
-            )[0]
-
-            grad_sq = grad_global.square().sum(dim=1)
-            grad_norm = torch.sqrt(
-                grad_sq
-                + float(self.config.coord_grad_eps)
-            )
-
-            hessian_times_grad = torch.autograd.grad(
-                0.5 * grad_sq.sum(),
-                x,
-                create_graph=True,
-                retain_graph=True,
-                only_inputs=True,
-            )[0]
-
-            relative_scale = (
-                (grad_global * hessian_times_grad)
-                .sum(dim=1)
-                / (
-                    grad_norm.pow(3)
-                    + float(
-                        self.config.scale_denominator_eps
-                    )
-                )
-            )
-
-            scale_terms.append(
-                relative_scale.square().mean()
-            )
-
-        return (
-            torch.stack(sub_terms).mean(),
-            torch.stack(scale_terms).mean(),
-        )
-
 
 # =============================================================================
 # Public run config/result
@@ -744,12 +337,7 @@ class Stage1ARunConfig:
         "flow_stp_stage1a_shared_logE_global_gauge_v1"
     )
 
-    # Selected log-expression Poisson model; optional penalties are disabled.
-    submersion_weight: float = 0.0
-    scale_variation_weight: float = 0.0
-    coverage_prior_weight: float = 0.0
-    coverage_prior_sd: float = 0.05
-    nuisance_weight: float = 0.0
+    # Selected log-expression Poisson model.
 
     # Optimization.
     epochs: int = 1500
@@ -771,7 +359,6 @@ class Stage1ARunConfig:
     gauge_mode: str = "global"
 
     coord_grad_min: float = 0.05
-    coord_grad_samples_per_slice: Optional[int] = 128
     coord_grad_eps: float = 1e-12
     scale_denominator_eps: float = 1e-8
     coord_hidden: tuple[int, ...] = (64, 64)
@@ -783,22 +370,9 @@ class Stage1ARunConfig:
     gauge_lower_quantile: float = 0.005
     gauge_upper_quantile: float = 0.995
 
-    # Direct-coverage endpoints are retained for ablations, but the selected
-    # primary model uses the complete normalized coordinate interval.
-    max_missing_each_end: float = 0.0
-    initial_missing: float = 0.0
-
-    # Slice nuisance effects are retained for ablations only.
-    slice_effect_dim: int = 0
 
     # Essential observation-model correction selected by the PFC ablation.
     use_library_size_offset: bool = True
-
-    # Historical compatibility fields accepted but unused by the new
-    # expression architecture.
-    field_hidden: tuple[int, ...] = (128, 128)
-    n_flow_steps: int = 16
-    coord_min_width: float = 0.05
 
 
 @dataclass
@@ -934,21 +508,30 @@ def _atomic_torch_save(
     tmp.replace(path)
 
 
-def _load_torch(
-    path: Path,
-    map_location,
-):
-    try:
-        return torch.load(
-            path,
-            map_location=map_location,
-            weights_only=False,
-        )
-    except TypeError:
-        return torch.load(
-            path,
-            map_location=map_location,
-        )
+def _load_torch(path: Path, map_location):
+    payload = torch.load(path, map_location=map_location, weights_only=False)
+    if payload.get("method_version") == METHOD_VERSION:
+        cfg = payload.get("model_config", {})
+        for name in ("slice_effect_dim", "max_missing_each_end", "initial_missing",
+                     "coord_submersion_weight"):
+            if cfg.get(name, 0) != 0:
+                raise RuntimeError(f"Checkpoint has unsupported {name}; use its historical code.")
+        payload["model_config"] = {
+            key: value for key, value in cfg.items()
+            if key in FlowSTPConfig.__dataclass_fields__
+        }
+        state = payload.get("model_state_dict", {})
+        for key in ("coordinate_maps.missing_left", "coordinate_maps.missing_right"):
+            if key in state:
+                if torch.count_nonzero(state[key]).item():
+                    raise RuntimeError("Checkpoint has nonzero coverage endpoints.")
+                del state[key]
+        opt = payload.get("optimizer_state_dict")
+        if opt and len(opt["param_groups"]) == 2:
+            old_endpoints = opt["param_groups"].pop()
+            for pid in old_endpoints["params"]:
+                opt["state"].pop(pid, None)
+    return payload
 
 
 def _state_dict_cpu(model) -> dict:
@@ -1095,64 +678,6 @@ def _build_library_offsets(
         )
 
     return offsets
-
-
-def _initial_log_expression_baseline(
-    data,
-    *,
-    chunk_size: int = 65536,
-) -> Tensor:
-    """Estimate a positive Psi baseline from library-normalized training means."""
-    total = torch.zeros(
-        int(data["n_genes"]),
-        dtype=torch.float64,
-    )
-    n_total = 0
-
-    for s in range(
-        int(data["n_slices"])
-    ):
-        train = data["train_idx"][s]
-        counts = data["counts"][s]
-        log_library = data["log_library"][s]
-
-        for start in range(
-            0,
-            train.numel(),
-            int(chunk_size),
-        ):
-            idx = train[
-                start:
-                start + int(chunk_size)
-            ]
-            y = counts[idx].to(
-                dtype=torch.float64
-            )
-            inverse_exposure = torch.exp(
-                -log_library[idx].to(
-                    dtype=torch.float64
-                )
-            )
-
-            total += (
-                y
-                * inverse_exposure[:, None]
-            ).sum(dim=0)
-            n_total += int(
-                idx.numel()
-            )
-
-    if n_total <= 0:
-        raise RuntimeError(
-            "Cannot initialize Fisher-flat baseline from empty training data."
-        )
-
-    mean_expression = (
-        total
-        / float(n_total)
-    ).clamp_min(1e-4)
-
-    return torch.log(mean_expression).float()
 
 
 def _prepare_data(
@@ -1481,9 +1006,6 @@ def _make_model_config(
         decoder_hidden=tuple(
             config.decoder_hidden
         ),
-        slice_effect_dim=int(
-            config.slice_effect_dim
-        ),
         coord_grad_min=float(
             config.coord_grad_min
         ),
@@ -1492,30 +1014,6 @@ def _make_model_config(
         ),
         scale_denominator_eps=float(
             config.scale_denominator_eps
-        ),
-        coverage_prior_sd=float(
-            config.coverage_prior_sd
-        ),
-        max_missing_each_end=float(
-            config.max_missing_each_end
-        ),
-        initial_missing=float(
-            config.initial_missing
-        ),
-        field_hidden=tuple(
-            config.field_hidden
-        ),
-        n_flow_steps=int(
-            config.n_flow_steps
-        ),
-        coord_min_width=float(
-            config.coord_min_width
-        ),
-        coord_submersion_weight=float(
-            config.submersion_weight
-        ),
-        coord_grad_samples_per_slice=(
-            config.coord_grad_samples_per_slice
         ),
     )
 
@@ -1527,64 +1025,12 @@ def _refresh_gauge(
     config: Stage1ARunConfig,
     device: torch.device,
 ) -> None:
-    """Refresh the detached robust affine coordinate gauge.
-
-    per_tissue reproduces the original Stage-1 behavior: each tissue gets its
-    own robust affine normalization. global computes one robust affine
-    normalization from pooled fixed reference points across all tissues and
-    copies that same ruler to every time point.
-    """
+    """Refresh one detached affine ruler from pooled spatial references."""
     model.eval()
+    if config.gauge_mode != "global":
+        raise ValueError("The selected model requires the global gauge.")
 
-    gauge_mode = str(config.gauge_mode)
-    if gauge_mode not in {"per_tissue", "global"}:
-        raise ValueError(
-            "gauge_mode must be 'per_tissue' or 'global'; "
-            f"got {gauge_mode!r}."
-        )
-
-    if gauge_mode == "global":
-        raw_parts = []
-
-        for s in range(data["n_slices"]):
-            idx = data["gauge_idx"][s]
-            x = data["coords"][s][idx].to(
-                device,
-                non_blocking=(device.type == "cuda"),
-            )
-            raw_parts.append(
-                model.coordinate_maps.raw_one_slice(
-                    x,
-                    s,
-                )
-            )
-
-        pooled = torch.cat(raw_parts, dim=0)
-        low = torch.quantile(
-            pooled,
-            float(config.gauge_lower_quantile),
-        )
-        high = torch.quantile(
-            pooled,
-            float(config.gauge_upper_quantile),
-        )
-
-        if (
-            not torch.isfinite(low)
-            or not torch.isfinite(high)
-            or high <= low + 1e-5
-        ):
-            raise RuntimeError(
-                "Degenerate global robust coordinate gauge."
-            )
-
-        model.coordinate_maps.gauge_low.copy_(
-            low.expand_as(model.coordinate_maps.gauge_low)
-        )
-        model.coordinate_maps.gauge_high.copy_(
-            high.expand_as(model.coordinate_maps.gauge_high)
-        )
-        return
+    raw_parts = []
 
     for s in range(data["n_slices"]):
         idx = data["gauge_idx"][s]
@@ -1592,32 +1038,38 @@ def _refresh_gauge(
             device,
             non_blocking=(device.type == "cuda"),
         )
-
-        u = model.coordinate_maps.raw_one_slice(
-            x,
-            s,
-        )
-
-        low = torch.quantile(
-            u,
-            float(config.gauge_lower_quantile),
-        )
-        high = torch.quantile(
-            u,
-            float(config.gauge_upper_quantile),
-        )
-
-        if (
-            not torch.isfinite(low)
-            or not torch.isfinite(high)
-            or high <= low + 1e-5
-        ):
-            raise RuntimeError(
-                f"Degenerate robust gauge for slice {s}."
+        raw_parts.append(
+            model.coordinate_maps.raw_one_slice(
+                x,
+                s,
             )
+        )
 
-        model.coordinate_maps.gauge_low[s] = low
-        model.coordinate_maps.gauge_high[s] = high
+    pooled = torch.cat(raw_parts, dim=0)
+    low = torch.quantile(
+        pooled,
+        float(config.gauge_lower_quantile),
+    )
+    high = torch.quantile(
+        pooled,
+        float(config.gauge_upper_quantile),
+    )
+
+    if (
+        not torch.isfinite(low)
+        or not torch.isfinite(high)
+        or high <= low + 1e-5
+    ):
+        raise RuntimeError(
+            "Degenerate global robust coordinate gauge."
+        )
+
+    model.coordinate_maps.gauge_low.copy_(
+        low.expand_as(model.coordinate_maps.gauge_low)
+    )
+    model.coordinate_maps.gauge_high.copy_(
+        high.expand_as(model.coordinate_maps.gauge_high)
+    )
 
 def _balanced_batch(
     data,
@@ -1707,67 +1159,6 @@ def _balanced_batch(
             non_blocking=nb,
         ),
     }
-
-
-def _geometry_sample(
-    data,
-    config: Stage1ARunConfig,
-    epoch: int,
-    device: torch.device,
-):
-    rng = np.random.default_rng(
-        int(config.seed)
-        + 4000
-        + int(epoch)
-    )
-
-    sample = []
-
-    for s in range(
-        data["n_slices"]
-    ):
-        n = len(
-            data["coords"][s]
-        )
-
-        requested = (
-            config.coord_grad_samples_per_slice
-        )
-
-        if (
-            requested is None
-            or int(requested) <= 0
-        ):
-            k = n
-        else:
-            k = min(
-                int(requested),
-                n,
-            )
-
-        idx = np.sort(
-            rng.choice(
-                n,
-                size=k,
-                replace=False,
-            )
-        )
-
-        sample.append(
-            data["coords"][s][
-                torch.as_tensor(
-                    idx,
-                    dtype=torch.long,
-                )
-            ].to(
-                device,
-                non_blocking=(
-                    device.type == "cuda"
-                ),
-            )
-        )
-
-    return sample
 
 
 @torch.no_grad()
@@ -1898,12 +1289,10 @@ def _coordinate_diagnostics(
             .requires_grad_(True)
         )
 
+        # Retain established diagnostic column names; both now refer to the
+        # same global coordinate because coverage endpoints were removed.
         z_local, z_global = (
-            model.coordinate_maps
-            .local_and_global_one_slice(
-                x,
-                s,
-            )
+            (model.coordinate_maps.one_slice(x, s),) * 2
         )
 
         g_local = torch.autograd.grad(
@@ -2028,29 +1417,10 @@ def _coordinate_diagnostics(
         except Exception:
             pass
 
-        with torch.no_grad():
-            a, b, width = (
-                model.coord_maps
-                .intervals()
-            )
-
-            a_s = float(
-                a[s].cpu()
-            )
-            b_s = float(
-                b[s].cpu()
-            )
-            width_s = float(
-                width[s].cpu()
-            )
-
         rows.append(
             {
                 "slice_id": s,
                 "n_diagnostic": len(local_np),
-                "interval_a": a_s,
-                "interval_b": b_s,
-                "interval_width": width_s,
                 "z_min": float(
                     np.min(z_np)
                 ),
@@ -2216,11 +1586,6 @@ def _coordinate_diagnostics(
                 ).any()
                 else np.nan
             ),
-        "mean_interval_width": float(
-            frame[
-                "interval_width"
-            ].mean()
-        ),
 
         # Compatibility aliases used by older notebooks.
         "grad_std_p05": float(
@@ -2282,7 +1647,7 @@ def _infer_cells(
             )
 
             z_parts.append(
-                model.coord_maps(
+                model.coordinate_maps(
                     coords,
                     s,
                 )
@@ -2350,30 +1715,8 @@ def run_stage1a(
         else config
     )
 
-    selected_model_settings = {
-        "use_library_size_offset": True,
-        "submersion_weight": 0.0,
-        "scale_variation_weight": 0.0,
-        "coverage_prior_weight": 0.0,
-        "nuisance_weight": 0.0,
-        "slice_effect_dim": 0,
-        "max_missing_each_end": 0.0,
-        "initial_missing": 0.0,
-    }
-    mismatches = {
-        name: (getattr(config, name), expected)
-        for name, expected in selected_model_settings.items()
-        if getattr(config, name) != expected
-    }
-    if mismatches:
-        details = ", ".join(
-            f"{name}={actual!r} (expected {expected!r})"
-            for name, (actual, expected) in mismatches.items()
-        )
-        raise ValueError(
-            "Stage 1 now contains only the selected library-size-offset "
-            f"Poisson model; unsupported alternative settings: {details}."
-        )
+    if not config.use_library_size_offset:
+        raise ValueError("The selected model requires the library-size offset.")
 
     coordinate_choice = (
         str(config.coordinate_decoder),
@@ -2382,7 +1725,7 @@ def run_stage1a(
     if coordinate_choice != ("shared_auto", "global"):
         raise ValueError(
             "The frozen runner requires shared_auto/global; "
-            "previous independent and per-tissue variants are archived. "
+            "Historical alternatives remain available in stage1/archive. "
             f"Received {coordinate_choice!r}."
         )
 
@@ -2655,50 +1998,9 @@ def run_stage1a(
             device,
         )
 
-        endpoint_params = [
-            model.coordinate_maps
-            .missing_left,
-
-            model.coordinate_maps
-            .missing_right,
-        ]
-
-        endpoint_ids = {
-            id(p)
-            for p in endpoint_params
-        }
-
-        network_params = [
-            p
-            for p in model.parameters()
-            if (
-                p.requires_grad
-                and id(p)
-                not in endpoint_ids
-            )
-        ]
-
         optimizer = torch.optim.AdamW(
-            [
-                {
-                    "params":
-                        network_params,
-                    "weight_decay":
-                        float(
-                            config.weight_decay
-                        ),
-                },
-                {
-                    "params":
-                        endpoint_params,
-                    # No hidden L2 pull toward full coverage.
-                    "weight_decay":
-                        0.0,
-                },
-            ],
-            lr=float(
-                config.learning_rate
-            ),
+            model.parameters(), lr=float(config.learning_rate),
+            weight_decay=float(config.weight_decay),
         )
 
         generator = torch.Generator(
@@ -2840,60 +2142,7 @@ def run_stage1a(
                 reduction="mean",
             )
 
-            zero_penalty = data_nll.new_zeros(())
-
-            if (
-                float(config.submersion_weight) != 0.0
-                or float(config.scale_variation_weight) != 0.0
-            ):
-                geometry_coords = _geometry_sample(
-                    data,
-                    config,
-                    epoch,
-                    device,
-                )
-                (
-                    submersion,
-                    scale_variation,
-                ) = model.coordinate_geometry_penalties(
-                    geometry_coords
-                )
-            else:
-                submersion = zero_penalty
-                scale_variation = zero_penalty
-
-            if float(config.coverage_prior_weight) != 0.0:
-                coverage_prior = (
-                    model.coordinate_maps
-                    .coverage_penalty()
-                )
-            else:
-                coverage_prior = zero_penalty
-
-            if float(config.nuisance_weight) != 0.0:
-                nuisance = model.nuisance_penalty()
-            else:
-                nuisance = zero_penalty
-
-            total = (
-                data_nll
-                + float(
-                    config.submersion_weight
-                )
-                * submersion
-                + float(
-                    config.scale_variation_weight
-                )
-                * scale_variation
-                + float(
-                    config.coverage_prior_weight
-                )
-                * coverage_prior
-                + float(
-                    config.nuisance_weight
-                )
-                * nuisance
-            )
+            total = data_nll
 
             if not torch.isfinite(total):
                 raise FloatingPointError(
@@ -2914,7 +2163,6 @@ def run_stage1a(
                 )
 
             optimizer.step()
-            model.coordinate_maps.project_endpoints_()
 
             if (
                 epoch == 1
@@ -2926,53 +2174,15 @@ def run_stage1a(
                 or epoch
                 == int(config.epochs)
             ):
-                with torch.no_grad():
-                    _, _, width = (
-                        model.coord_maps
-                        .intervals()
-                    )
-
-                    mean_width = float(
-                        width.mean().cpu()
-                    )
-
                 row = {
                     "epoch": epoch,
-                    "data_nll": float(
-                        data_nll.detach().cpu()
-                    ),
-                    "submersion": float(
-                        submersion.detach().cpu()
-                    ),
-                    "scale_variation": float(
-                        scale_variation
-                        .detach()
-                        .cpu()
-                    ),
-                    "coverage_prior": float(
-                        coverage_prior
-                        .detach()
-                        .cpu()
-                    ),
-                    "nuisance": float(
-                        nuisance.detach().cpu()
-                    ),
-                    "loss": float(
-                        total.detach().cpu()
-                    ),
-                    "mean_coverage_width":
-                        mean_width,
+                    "data_nll": float(data_nll.detach().cpu()),
+                    "loss": float(total.detach().cpu()),
                 }
 
                 history.append(row)
 
-                print(
-                    f"epoch {epoch:4d} | "
-                    f"NLL={row['data_nll']:.5f} | "
-                    f"sub={row['submersion']:.5f} | "
-                    f"scale={row['scale_variation']:.4f} | "
-                    f"coverage={mean_width:.3f}"
-                )
+                print(f"epoch {epoch:4d} | NLL={row['data_nll']:.5f}")
 
             if (
                 epoch
@@ -3048,32 +2258,6 @@ def run_stage1a(
             index=False,
         )
 
-        with torch.no_grad():
-            a, b, width = (
-                model.coord_maps
-                .intervals()
-            )
-
-            intervals = (
-                data["panel"]
-                .copy()
-            )
-            intervals[
-                "interval_a"
-            ] = a.cpu().numpy()
-            intervals[
-                "interval_b"
-            ] = b.cpu().numpy()
-            intervals[
-                "interval_width"
-            ] = width.cpu().numpy()
-
-        intervals.to_csv(
-            tables_dir
-            / "coverage_intervals.csv",
-            index=False,
-        )
-
         elapsed_total = (
             elapsed_before
             + time.time()
@@ -3087,34 +2271,10 @@ def run_stage1a(
                 float(validation_nll),
             "training_elapsed_sec":
                 float(elapsed_total),
-            "submersion_weight":
-                float(
-                    config.submersion_weight
-                ),
-            "scale_variation_weight":
-                float(
-                    config.scale_variation_weight
-                ),
-            "coverage_prior_weight":
-                float(
-                    config.coverage_prior_weight
-                ),
-            "coverage_prior_sd":
-                float(
-                    config.coverage_prior_sd
-                ),
-            "nuisance_weight":
-                float(
-                    config.nuisance_weight
-                ),
-            "slice_effect_dim":
-                int(
-                    config.slice_effect_dim
-                ),
             "expression_parameterization":
                 "log_E",
             "coordinate_decoder":
-                str(config.coordinate_decoder),
+                str(model.config.coordinate_decoder),
             "coordinate_gauge":
                 str(config.gauge_mode),
             "coordinate_hidden":
@@ -3176,6 +2336,7 @@ def run_stage1a(
         encoding="utf-8",
     ) as handle:
         summary = json.load(handle)
+    summary["coordinate_decoder"] = model.config.coordinate_decoder
 
     history_df = (
         pd.read_csv(history_path)
@@ -3283,3 +2444,4 @@ __all__ = [
     "Stage1AResult",
     "run_stage1a",
 ]
+
