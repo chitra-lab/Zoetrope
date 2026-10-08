@@ -1,162 +1,111 @@
+"""Regression gates for the single frozen Stage-1 scientific model."""
+
+import numpy as np
+import pytest
 import torch
 
 from flow_stp.stage1 import (
-    Stage1AOptimizedRunConfig,
-    Stage1ARunConfig,
+    METHOD_VERSION, FlowSTPConfig, FlowSTPModel, Stage1ARunConfig, run_stage1a,
 )
-from flow_stp.stage1.stage1a import (
-    METHOD_VERSION,
-    FlowSTPConfig,
-    FlowSTPModel,
-)
-from flow_stp.stage1.stage1a_optimized import (
-    OPTIMIZATION_PRESET_VERSION,
-)
+from flow_stp.stage1.stage1a import _make_model_config
 
 
-def test_stage1a_primary_defaults_are_library_offset_fisher_flat():
-    config = Stage1ARunConfig()
+def test_selected_defaults():
+    cfg = Stage1ARunConfig()
+    assert METHOD_VERSION == "stage1a_shared_logE_global_gauge_v1"
+    assert cfg.coordinate_decoder == "shared_auto"
+    assert cfg.gauge_mode == "global"
+    assert cfg.epochs == 1500
+    assert cfg.batch_size_per_slice == 1024
+    assert cfg.learning_rate == 2e-3
+    assert cfg.coord_hidden == (64, 64)
+    assert cfg.decoder_hidden == (128, 128)
+    assert cfg.use_library_size_offset is True
+    assert cfg.submersion_weight == 0.0
+    assert cfg.scale_variation_weight == 0.0
+    assert cfg.coverage_prior_weight == 0.0
+    assert cfg.nuisance_weight == 0.0
+    assert cfg.slice_effect_dim == 0
 
-    assert METHOD_VERSION == (
-        "stage1a_library_offset_fisher_flat_v1"
+
+@pytest.mark.parametrize(
+    "times,expected",
+    [
+        ([0.0, 0.3, 1.0], "shared_time"),
+        ([0.0, 0.0, 1.0], "shared_time_tissue"),
+        ([0.0, 0.5, 0.5, 1.0], "shared_time_tissue"),
+    ],
+)
+def test_tissue_multiplicity_automatically_selects_map(times, expected):
+    data = {
+        "n_slices": len(times),
+        "n_genes": 3,
+        "raw_times": np.array(times),
+        "normalized_times": np.array(times),
+    }
+    config = _make_model_config(data, Stage1ARunConfig())
+    assert config.coordinate_decoder == expected
+    assert config.gauge_mode == "global"
+    model = FlowSTPModel(config)
+    expected_input = 3 + (len(times) if expected == "shared_time_tissue" else 0)
+    assert model.coordinate_maps.shared_map.net[0].in_features == expected_input
+
+
+def test_time_only_and_tissue_conditioned_have_matching_initial_coordinates():
+    base = dict(
+        num_slices=2, num_genes=3, seed=20260622,
+        slice_times=(0.0, 1.0), coord_hidden=(16, 16),
+        decoder_hidden=(16, 16),
     )
-
-    # Selected primary observation model.
-    assert config.use_library_size_offset is True
-
-    # Optional regularizers / nuisance components are not active.
-    assert config.submersion_weight == 0.0
-    assert config.scale_variation_weight == 0.0
-    assert config.coverage_prior_weight == 0.0
-    assert config.nuisance_weight == 0.0
-    assert config.slice_effect_dim == 0
-
-    # Primary model uses the complete normalized coordinate interval.
-    assert config.max_missing_each_end == 0.0
-    assert config.initial_missing == 0.0
+    time_only = FlowSTPModel(FlowSTPConfig(coordinate_decoder="shared_time", **base))
+    with_id = FlowSTPModel(FlowSTPConfig(coordinate_decoder="shared_time_tissue", **base))
+    xy = torch.tensor([[0.1, -0.2], [0.6, 0.5], [-1.0, 1.2]])
+    for sid in (0, 1):
+        assert torch.allclose(
+            time_only.coordinate_maps.raw_one_slice(xy, sid),
+            with_id.coordinate_maps.raw_one_slice(xy, sid),
+            atol=1e-7, rtol=1e-7,
+        )
+    for a, b in zip(time_only.decoder.parameters(), with_id.decoder.parameters()):
+        assert torch.equal(a, b)
 
 
-def test_stage1_parameterizes_psi_directly_and_reconstructs_poisson_mean():
+def test_log_expression_poisson_field_matches_derived_fisher_coordinates():
     model = FlowSTPModel(
-        FlowSTPConfig(
-            num_slices=1,
-            num_genes=2,
-            coord_hidden=(4,),
-            decoder_hidden=(4,),
-        )
+        FlowSTPConfig(num_slices=1, num_genes=2, slice_times=(0.0,),
+                      coord_hidden=(8,), decoder_hidden=(8,))
     )
-
     with torch.no_grad():
-        model.initialize_fisher_flat_baseline_(
-            torch.tensor([4.0, 6.0])
-        )
-        # Make the residual field exactly zero for this algebraic test.
+        model.log_expression_baseline.copy_(torch.log(torch.tensor([4.0, 9.0])))
         for parameter in model.decoder.parameters():
             parameter.zero_()
-
     z = torch.tensor([0.2, 0.8])
-    t = torch.tensor([0.1, 0.9])
-
-    psi = model.fisher_flat(
-        z,
-        t,
-    )
-    expression = model.expression(
-        z,
-        t,
-    )
-
-    assert torch.allclose(
-        psi,
-        torch.tensor(
-            [[4.0, 6.0], [4.0, 6.0]]
-        ),
+    times = torch.tensor([0.1, 0.9])
+    assert torch.allclose(model.expression(z, times),
+                          torch.tensor([[4.0, 9.0], [4.0, 9.0]]))
+    assert torch.allclose(model.fisher_flat(z, times),
+                          torch.tensor([[4.0, 6.0], [4.0, 6.0]]))
+    out = model(
+        coords=torch.tensor([[0.0, 0.0], [1.0, 1.0]]),
+        slice_idx=torch.zeros(2, dtype=torch.long),
+        time=times,
+        log_library_size=torch.log(torch.tensor([2.0, 0.5])),
     )
     assert torch.allclose(
-        expression,
-        torch.tensor(
-            [[4.0, 9.0], [4.0, 9.0]]
-        ),
+        torch.exp(out["log_mu"]),
+        torch.tensor([[8.0, 18.0], [2.0, 4.5]]),
+        atol=1e-5, rtol=1e-5,
     )
 
 
-def test_library_offset_multiplies_reconstructed_expression_mean():
-    model = FlowSTPModel(
-        FlowSTPConfig(
-            num_slices=1,
-            num_genes=2,
-            coord_hidden=(4,),
-            decoder_hidden=(4,),
-        )
-    )
-
-    with torch.no_grad():
-        model.initialize_fisher_flat_baseline_(
-            torch.tensor([4.0, 6.0])
-        )
-        for parameter in model.decoder.parameters():
-            parameter.zero_()
-
-    output = model(
-        coords=torch.tensor(
-            [[0.0, 0.0], [1.0, 1.0]]
-        ),
-        slice_idx=torch.zeros(
-            2,
-            dtype=torch.long,
-        ),
-        time=torch.tensor([0.2, 0.8]),
-        log_library_size=torch.log(
-            torch.tensor([2.0, 0.5])
-        ),
-    )
-
-    expected_mu = torch.tensor(
-        [
-            [8.0, 18.0],
-            [2.0, 4.5],
-        ]
-    )
-
-    assert torch.allclose(
-        torch.exp(
-            output["log_mu"]
-        ),
-        expected_mu,
-        atol=1e-6,
-        rtol=1e-6,
-    )
-
-
-def test_stage1a_optimized_preset_changes_only_optimizer_mobility():
-    baseline = Stage1ARunConfig()
-    optimized = Stage1AOptimizedRunConfig()
-
-    assert OPTIMIZATION_PRESET_VERSION == (
-        "stage1a_library_offset_fisher_flat_high_lr_v1"
-    )
-    assert baseline.learning_rate == 1e-3
-    assert optimized.learning_rate == 2e-3
-
-    for name in (
-        "use_library_size_offset",
-        "submersion_weight",
-        "scale_variation_weight",
-        "coverage_prior_weight",
-        "nuisance_weight",
-        "slice_effect_dim",
-        "max_missing_each_end",
-        "initial_missing",
-        "coord_hidden",
-        "decoder_hidden",
-        "batch_size_per_slice",
-        "weight_decay",
-        "grad_clip_norm",
-    ):
-        assert getattr(
-            optimized,
-            name,
-        ) == getattr(
-            baseline,
-            name,
+def test_archived_coordinate_modes_cannot_be_selected_from_active_runner(tmp_path):
+    with pytest.raises(ValueError, match="shared_auto/global"):
+        run_stage1a(
+            counts_by_slice=[], spatial_by_slice=[],
+            panel_df=None, gene_names=[],
+            config=Stage1ARunConfig(
+                output_dir=tmp_path,
+                coordinate_decoder="independent",
+                gauge_mode="per_tissue",
+            ),
         )

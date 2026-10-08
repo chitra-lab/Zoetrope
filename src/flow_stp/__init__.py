@@ -1,16 +1,14 @@
-"""Flow-STP: direct Fisher-flat anatomical-axis estimation and dynamics."""
+"""Flow-STP: shared anatomical axis and continuously derived Fisher dynamics."""
 
 __version__ = "0.0.0"
 
 from .stage1 import (
     METHOD_VERSION,
-    OPTIMIZATION_PRESET_VERSION,
+    FlowSTPConfig,
     FlowSTPModel,
     Stage1ARunConfig,
-    Stage1AOptimizedRunConfig,
     Stage1AResult,
     run_stage1a,
-    run_stage1a_optimized,
 )
 from .stage2 import (
     FlowTrajectory,
@@ -23,19 +21,9 @@ from .stage2 import (
 )
 
 __all__ = [
-    "METHOD_VERSION",
-    "OPTIMIZATION_PRESET_VERSION",
-    "FlowSTPModel",
-    "Stage1ARunConfig",
-    "Stage1AOptimizedRunConfig",
-    "Stage1AResult",
-    "run_stage1a",
-    "run_stage1a_optimized",
-    "FlowTrajectory",
-    "LocalDynamics",
-    "field_derivatives",
-    "derived_velocity",
-    "estimate_local_dynamics",
-    "velocity_field",
+    "METHOD_VERSION", "FlowSTPConfig", "FlowSTPModel",
+    "Stage1ARunConfig", "Stage1AResult", "run_stage1a",
+    "FlowTrajectory", "LocalDynamics", "field_derivatives",
+    "derived_velocity", "estimate_local_dynamics", "velocity_field",
     "integrate_flow_rk4",
 ]
