@@ -29,8 +29,7 @@ standardized; the model uses a clipped log library-size exposure offset.
 
 **Frozen settings:** coordinate MLP (64,64) tanh; log-E decoder (128,128) GELU;
 AdamW learning rate 2e-3; weight decay 1e-5; 1500 epochs; 1024 observations
-per tissue per update; seed 20260622; all optional coordinate and nuisance
-penalties disabled. Initial log-expression intercept is zero, matching the
+per tissue per update; seed 20260622; no coordinate or nuisance penalties. Initial log-expression intercept is zero, matching the
 frozen synthetic configuration. Historical methods were moved to
 [`stage1/archive`](src/flow_stp/stage1/archive/README.md).
 
@@ -48,7 +47,7 @@ result = run_stage1a(
     obs_df=obs_df,
     config=Stage1ARunConfig(output_dir="experiments/selected_stage1"),
 )
-print(result.summary["coordinate_decoder"])  # shared_time or shared_time_tissue
+print(result.model.config.coordinate_decoder)  # shared_time or shared_time_tissue
 field = result.model.fisher_flat
 local = estimate_local_dynamics(field, z, t)
 trajectory = integrate_flow_rk4(field, anchors, t0=0.0, t1=1.0)
@@ -85,3 +84,27 @@ velocity in learned `z` units.
 Legacy neural-PDE, inverse-flow and other previously deleted implementations
 remain accessible via Git history rather than being reintroduced into the active
 package.
+
+
+## Installation and notebooks
+
+Install the core package with `pip install -e .`; add `[qian,notebooks]` for
+Qian h5ad loading and notebooks, or `[test]` for regression tests.
+
+- `flow_stp_full_stage1_qian_pfc_workflow.ipynb`: current Qian loading, selected
+  Stage 1, and derived Stage 2 workflow.
+- `notebooks/metrics_and_tissue_displacement.ipynb`: coordinate diagnostics,
+  optional RPCE, and the logistic material-flow tissue displacement benchmark.
+- `src/flow_stp/simulations/logistic_displacement.py`: reusable generator,
+  contour lift, and displacement evaluator. The notebook defaults to a smoke
+  check; enable `RUN_FULL` for the original 50 × 100,000-cell scale.
+
+The archive remains unchanged and accessible. The active API no longer accepts
+obsolete penalty, nuisance, coverage-endpoint or neural-flow settings.
+Existing checkpoints from the selected method are migrated when loading through
+`run_stage1a`: zero coverage endpoints and their optimizer group are removed.
+Nonzero endpoints and alternative models are rejected. New checkpoints use the
+clean state schema; older source versions cannot read them. Network initialization,
+log-E likelihood and pooled gauge are preserved. Removing clamped endpoint
+parameters also removes their contribution to gradient clipping, so training is
+not promised to be bit-for-bit identical to pre-cleanup runs.

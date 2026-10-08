@@ -1,11 +1,11 @@
 """Stage 2: direct Fisher-flat derivatives, closed-form velocity, and RK4.
 
-Stage 2 has no separately learned trajectory model.  Stage 1 already estimates
-the independent-Poisson Fisher-flat field
+Stage 2 has no separately learned trajectory model. Stage 1 fits log E and
+derives the independent-Poisson Fisher-flat field
 
     Psi(z,t) = 2 sqrt(E(z,t))
 
-directly.  Stage 2 differentiates that fitted field, computes the Euclidean
+from that fit. Stage 2 differentiates the derived field, computes the Euclidean
 projection velocity
 
     V(z,t) = - <Psi_z, Psi_t> / <Psi_z, Psi_z>,
@@ -358,3 +358,4 @@ __all__ = [
     "velocity_field",
     "integrate_flow_rk4",
 ]
+

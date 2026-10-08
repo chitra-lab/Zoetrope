@@ -150,23 +150,6 @@ class QianPFCData:
             "obs_df": self.obs_df,
         }
 
-    def as_legacy_tuple(
-        self,
-    ) -> tuple[
-        list[torch.Tensor],
-        pd.DataFrame,
-        pd.DataFrame,
-        list[str],
-        list[np.ndarray],
-    ]:
-        """Return the original notebook-style five objects."""
-        return (
-            self.counts_by_slice,
-            self.obs_df,
-            self.panel_df,
-            self.gene_names,
-            self.spatial_by_slice,
-        )
 
 
 def sanitize_name(value: Any) -> str:
@@ -1103,3 +1086,4 @@ __all__ = [
     "read_shared_metadata",
     "validate_qian_pfc_data",
 ]
+
