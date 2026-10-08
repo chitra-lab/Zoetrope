@@ -1,77 +1,87 @@
-# Anatomical Axis Dynamics Model
+# Anatomical Axis Dynamics Model (Flow-STP)
 
-This repository contains one active scientific pipeline.
+## Active Stage 1: shared anatomical coordinate + log-expression likelihood
 
-## Stage 1 — anatomical axis and Fisher-flat expression field
+The **only selected Stage-1 runner** is `flow_stp.stage1.run_stage1a`.
+It learns one time-dependent anatomical coordinate and a shared log-expression
+field using the library-exposure Poisson observation model:
 
-`flow_stp.stage1` learns anatomical coordinates together with
-a shared neural expression field parameterized directly in independent-Poisson
-Fisher-flat coordinates:
+```text
+eta_g(z,t) = beta_g + neural_decoder_g(z,t)      # learned log E
+Y_cg ~ Poisson(L_c exp(eta_g(z_c,t_c)))          # observed raw counts
+Psi_g(z,t) = 2 exp(eta_g(z,t)/2)                 # derived Fisher-flat field
+```
 
-Psi(z,t) = 2 sqrt(E(z,t)).
+The model automatically chooses the coordinate input based on **physical tissue
+counts per unique observed developmental time**, not biological sample IDs:
 
-The observation model remains Poisson with the cell library size as an exposure:
+- **Exactly one tissue at every time:** `z = alpha(x,y,t)`. No tissue ID.
+- **Two or more tissues at any observed time:** `z = alpha(x,y,t,onehot(tissue_id))`.
+  Tissue ID distinguishes physical slices, including replicates from the same
+  biological specimen.
 
-y_cg ~ Poisson(L_c E_g(z_c,t_c))
+The choice is automatic for a run; if even one time is replicated, all slices
+use the tissue-conditioned shared network. In both cases the coordinate model
+uses one **pooled robust global affine gauge** (0.5%–99.5% fixed spatial
+reference quantiles). Coordinates are standardized separately in each tissue
+before the neural coordinate map. Counts are not log-transformed or
+standardized; the model uses a clipped log library-size exposure offset.
 
-with
+**Frozen settings:** coordinate MLP (64,64) tanh; log-E decoder (128,128) GELU;
+AdamW learning rate 2e-3; weight decay 1e-5; 1500 epochs; 1024 observations
+per tissue per update; seed 20260622; all optional coordinate and nuisance
+penalties disabled. Initial log-expression intercept is zero, matching the
+frozen synthetic configuration. Historical methods were moved to
+[`stage1/archive`](src/flow_stp/stage1/archive/README.md).
 
-E_g(z,t) = Psi_g(z,t)^2 / 4.
+### Example
 
-Thus the fitted neural decoder outputs Psi directly. It does **not** first fit
-log E and then transform it into Fisher coordinates after estimation.
+```python
+from flow_stp.stage1 import Stage1ARunConfig, run_stage1a
+from flow_stp.stage2 import estimate_local_dynamics, integrate_flow_rk4
 
-The direct-Psi baseline is initialized on the positive branch from the
-library-normalized training gene means, with the neural residual head initialized
-near zero. `stage1a_optimized.py` is the same scientific model with the
-empirically selected 2e-3 learning-rate preset.
+result = run_stage1a(
+    counts_by_slice=counts_by_slice,
+    spatial_by_slice=spatial_by_slice,
+    panel_df=panel_df,             # one row per physical tissue, with time
+    gene_names=gene_names,
+    obs_df=obs_df,
+    config=Stage1ARunConfig(output_dir="experiments/selected_stage1"),
+)
+print(result.summary["coordinate_decoder"])  # shared_time or shared_time_tissue
+field = result.model.fisher_flat
+local = estimate_local_dynamics(field, z, t)
+trajectory = integrate_flow_rk4(field, anchors, t0=0.0, t1=1.0)
+```
 
-Stage 1 has exactly three coordinate-decoder choices; all other scientific
-components and defaults are held fixed:
+Use a **new** output directory: archived direct-Psi or historical log-E
+checkpoints are not interchangeable with this new model version. The runner
+writes a method-versioned manifest, checkpoints, coordinate tables, and
+training/validation diagnostics.
 
-1. **Independent / per-tissue gauge** (existing baseline):
-   `z_i = alpha_i(x,y)`, with a robust affine gauge refreshed separately in
-   each tissue.
-2. **Shared-time / per-tissue gauge**:
-   `z = alpha(x,y,t)`, but with the same per-tissue robust affine gauge as the
-   baseline.
-3. **Shared-time / global gauge**:
-   `z = alpha(x,y,t)`, with one robust affine ruler computed from pooled fixed
-   reference points across all tissues.
+## Stage 2: continuous Fisher dynamics
 
-The shared variants are exposed as
-`run_stage1a_shared_time_per_tissue` and
-`run_stage1a_shared_time_global`. This keeps real-data testing focused on the
-coordinate-decoder/gauge structure while leaving the library-offset Poisson
-likelihood, direct-Psi expression decoder, optimizer preset, outputs, and Stage 2
-interface unchanged.
+Differentiate the derived Fisher-flat field `Psi(z,t)=2 exp(eta/2)` to obtain
 
-## Stage 2 — derived dynamics
+```text
+V(z,t) = - <Psi_z,Psi_t> / ||Psi_z||²
+q(z,t) = Psi_t + V(z,t) Psi_z
+```
 
-`flow_stp.stage2` differentiates the directly fitted Fisher-flat field and
-computes
+Then integrate `dF/dt = V(F,t)` by RK4. There is no independent Stage-2
+trajectory training. Physical velocity requires a physical-coordinate
+interpretation/inversion of the learned anatomical map; `V` by itself is
+velocity in learned `z` units.
 
-V(z,t) = - <Psi_z, Psi_t> / <Psi_z, Psi_z>.
+## Layout
 
-It then obtains the anatomical flow F by classical RK4 integration of
+- `src/flow_stp/stage1/stage1a.py`: active selected log-E shared model
+- `src/flow_stp/stage1/archive/`: historical direct-Psi and related variants
+- `src/flow_stp/stage2/`: differentiable Fisher projection and RK4 dynamics
+- `src/flow_stp/data/`: data loading
+- `src/flow_stp/simulations/benchmark_dgp/`: simulation tools
+- `tests/`: tests for active code
 
-dF/dt = V(F,t).
-
-There is no separately fitted Stage-2 trajectory model.
-
-Typical use is:
-
-    field = stage1_result.model.fisher_flat
-    local = estimate_local_dynamics(field, z, t)
-    trajectory = integrate_flow_rk4(field, anchors, t0=0.0, t1=1.0)
-
-## Package layout
-
-- `src/flow_stp/stage1/` — library-offset Poisson estimation of z and direct Psi.
-- `src/flow_stp/stage2/` — direct-Psi derivatives, closed-form V, and RK4 F.
-- `src/flow_stp/data/` — data loading.
-- `src/flow_stp/simulations/benchmark_dgp/` — retained benchmark generator.
-- `src/flow_stp/metrics.py` — evaluation metrics.
-
-Competing, archived, finite-time, inverse-flow, neural-PDE, Stage-1b, zoo, and
-arclength model implementations remain removed from the active tree.
+Legacy neural-PDE, inverse-flow and other previously deleted implementations
+remain accessible via Git history rather than being reintroduced into the active
+package.

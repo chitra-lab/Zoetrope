@@ -1,27 +1,6 @@
-"""Selected Stage 1a anatomical-axis model in Fisher-flat coordinates.
-
-The active Stage 1 model is the minimal library-offset Poisson model, with the
-expression field parameterized directly in independent-Poisson Fisher-flat
-coordinates:
-
-    u_i(x, y) = raw spatial neural field
-    z_i       = robust affine normalization of u_i on fixed spatial references
-    Psi(z,t)  = b + f_theta(z,t)
-    E(z,t)    = Psi(z,t)^2 / 4
-    Y_cg      ~ Poisson(L_c E_g(z_c,t_c))
-
-where L_c is the cell library-size exposure.  The neural decoder therefore
-estimates Psi = 2 sqrt(E) directly rather than estimating log E and applying a
-nonlinear square-root transform only after fitting.
-
-The positive Fisher branch is selected by initialization: the trainable
-baseline is initialized to 2 sqrt(mean library-normalized expression), while
-the residual decoder head starts near zero.  The likelihood itself remains the
-ordinary Poisson likelihood.
-
-The coordinate regularizers, direct-coverage endpoints, and slice nuisance
-effects from earlier experiments remain present only as disabled compatibility
-controls; the public runner rejects them for the selected model.
+"""Selected Stage 1: shared coordinate (time-only or tissue-conditioned), global gauge,
+log E(z,t) Poisson decoder, and differentiably derived Fisher-flat Psi.
+Historic direct-Psi and independent models are under stage1/archive/.
 """
 
 from __future__ import annotations
@@ -42,7 +21,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-METHOD_VERSION = "stage1a_library_offset_fisher_flat_v1"
+METHOD_VERSION = "stage1a_shared_logE_global_gauge_v1"
 Tensor = torch.Tensor
 
 
@@ -95,12 +74,11 @@ class FlowSTPConfig:
 
     num_slices: int
     num_genes: int
+    seed: int = 20260622
 
-    # Coordinate decoder choices. The expression model and likelihood are
-    # identical across variants; only the map from tissue position to z and
-    # its affine gauge differ.
-    coordinate_decoder: str = "independent"
-    gauge_mode: str = "per_tissue"
+    # Resolved coordinate choice: time-only or tissue-conditioned.
+    coordinate_decoder: str = "shared_time"
+    gauge_mode: str = "global"
     slice_times: Tuple[float, ...] = ()
 
     coord_hidden: Tuple[int, ...] = (64, 64)
@@ -146,30 +124,27 @@ class SliceCoordinateMaps(nn.Module):
             torch.as_tensor(slice_times, dtype=torch.float32),
         )
 
-        if self.coordinate_decoder == "independent":
-            self.maps = nn.ModuleList(
-                [
-                    MLP(
-                        2,
-                        1,
-                        config.coord_hidden,
-                        "tanh",
-                    )
-                    for _ in range(self.num_slices)
-                ]
-            )
-            self.shared_map = None
-        elif self.coordinate_decoder == "shared_time":
+        if self.coordinate_decoder in ("shared_time", "shared_time_tissue"):
             self.maps = nn.ModuleList()
-            self.shared_map = MLP(
-                3,
-                1,
-                config.coord_hidden,
-                "tanh",
-            )
+            input_dim = 3 + (self.num_slices if self.coordinate_decoder == "shared_time_tissue" else 0)
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(int(config.seed) + 704113)
+                self.shared_map = MLP(input_dim, 1, config.coord_hidden, "tanh")
+                if self.coordinate_decoder == "shared_time_tissue":
+                    torch.manual_seed(int(config.seed) + 704113)
+                    base = MLP(3, 1, config.coord_hidden, "tanh")
+                    with torch.no_grad():
+                        for dst, src in zip(self.shared_map.net, base.net):
+                            if isinstance(dst, nn.Linear):
+                                if dst.in_features != src.in_features:
+                                    dst.weight.zero_()
+                                    dst.weight[:, :src.in_features].copy_(src.weight)
+                                else:
+                                    dst.weight.copy_(src.weight)
+                                dst.bias.copy_(src.bias)
         else:
             raise ValueError(
-                "coordinate_decoder must be 'independent' or 'shared_time'; "
+                "coordinate_decoder must be 'shared_time' or 'shared_time_tissue'; "
                 f"got {self.coordinate_decoder!r}."
             )
 
@@ -203,9 +178,6 @@ class SliceCoordinateMaps(nn.Module):
     ) -> Tensor:
         s = int(slice_id)
 
-        if self.coordinate_decoder == "independent":
-            return self.maps[s](coords).squeeze(-1)
-
         if self.shared_map is None:
             raise RuntimeError("shared_time coordinate decoder is missing.")
 
@@ -217,11 +189,12 @@ class SliceCoordinateMaps(nn.Module):
             time_value.reshape(1, 1)
             .expand(coords.shape[0], 1)
         )
-        inputs = torch.cat(
-            [coords, time_column],
-            dim=1,
-        )
-        return self.shared_map(inputs).squeeze(-1)
+        inputs = [coords, time_column]
+        if self.coordinate_decoder == "shared_time_tissue":
+            tissue_id = coords.new_zeros((len(coords), self.num_slices))
+            tissue_id[:, s] = 1.0
+            inputs.append(tissue_id)
+        return self.shared_map(torch.cat(inputs, dim=1)).squeeze(-1)
 
     def coverage_intervals(
         self,
@@ -340,7 +313,7 @@ class SliceCoordinateMaps(nn.Module):
 
 
 class FlowSTPModel(nn.Module):
-    """Selected Stage 1a model with a direct Fisher-flat expression field."""
+    """Shared-coordinate model: fit log E, derive Fisher-flat Psi."""
 
     def __init__(self, config: FlowSTPConfig):
         super().__init__()
@@ -350,34 +323,12 @@ class FlowSTPModel(nn.Module):
 
         G = int(config.num_genes)
 
-        # Direct Fisher-flat baseline.  It is initialized from the training
-        # data by run_stage1a before optimization begins.
-        self.psi_baseline = nn.Parameter(
-            torch.full(
-                (G,),
-                2.0,
-            )
-        )
+        self.log_expression_baseline = nn.Parameter(torch.zeros(G))
 
-        self.decoder = MLP(
-            2,
-            G,
-            config.decoder_hidden,
-            "gelu",
-        )
-
-        # Match the successful direct-Psi experiment: begin near a constant,
-        # positive Fisher branch and let the network learn a small residual
-        # field around it.
-        output_layer = self.decoder.net[-1]
-        if not isinstance(output_layer, nn.Linear):
-            raise TypeError("Decoder output layer must be nn.Linear.")
-        nn.init.normal_(
-            output_layer.weight,
-            mean=0.0,
-            std=1e-3,
-        )
-        nn.init.zeros_(output_layer.bias)
+        # Decoder initialization is independent of coordinate input width.
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(int(config.seed) + 71718)
+            self.decoder = MLP(2, G, config.decoder_hidden, "gelu")
 
         rank = int(config.slice_effect_dim)
 
@@ -401,84 +352,43 @@ class FlowSTPModel(nn.Module):
         return self.coordinate_maps
 
     @torch.no_grad()
-    def initialize_fisher_flat_baseline_(
-        self,
-        psi_baseline: Tensor,
-    ) -> None:
-        """Initialize the trainable direct-Psi baseline."""
-        value = psi_baseline.reshape(-1).to(
-            device=self.psi_baseline.device,
-            dtype=self.psi_baseline.dtype,
+    def initialize_log_expression_baseline_(self, baseline: Tensor) -> None:
+        """Initialize log E intercept from library-normalized mean counts."""
+        value = baseline.reshape(-1).to(
+            device=self.log_expression_baseline.device,
+            dtype=self.log_expression_baseline.dtype,
         )
-        if value.numel() != self.psi_baseline.numel():
-            raise ValueError(
-                "psi_baseline must have one value per gene."
-            )
+        if value.numel() != self.log_expression_baseline.numel():
+            raise ValueError("baseline must have one value per gene")
         if not torch.isfinite(value).all():
-            raise ValueError("psi_baseline must be finite.")
-        if (value <= 0).any():
-            raise ValueError(
-                "psi_baseline must select the positive Fisher branch."
-            )
-        self.psi_baseline.copy_(value)
+            raise ValueError("baseline must be finite")
+        self.log_expression_baseline.copy_(value)
 
-    def fisher_flat(
-        self,
-        z: Tensor,
-        time: Tensor,
-    ) -> Tensor:
-        """Return the directly estimated Psi(z,t) = 2 sqrt(E(z,t))."""
+    def log_expression(self, z: Tensor, time: Tensor) -> Tensor:
+        """Learned eta(z,t)=log E(z,t), excluding cell library exposure."""
         zc = z.reshape(-1).to(
-            device=self.psi_baseline.device,
-            dtype=self.psi_baseline.dtype,
+            device=self.log_expression_baseline.device,
+            dtype=self.log_expression_baseline.dtype,
         )
         tc = time.reshape(-1).to(
-            device=self.psi_baseline.device,
-            dtype=self.psi_baseline.dtype,
+            device=self.log_expression_baseline.device,
+            dtype=self.log_expression_baseline.dtype,
         )
         if zc.shape[0] != tc.shape[0]:
-            raise ValueError("z and time must have matching rows.")
-
-        return (
-            self.psi_baseline[None, :]
-            + self.decoder(
-                torch.stack(
-                    [zc, tc],
-                    dim=1,
-                )
-            )
+            raise ValueError("z and time must have matching rows")
+        return self.log_expression_baseline[None, :] + self.decoder(
+            torch.stack([zc, tc], dim=1)
         )
 
-    def psi(
-        self,
-        z: Tensor,
-        time: Tensor,
-    ) -> Tensor:
-        """Alias for the Fisher-flat field used by Stage 2."""
+    def expression(self, z: Tensor, time: Tensor) -> Tensor:
+        return torch.exp(self.log_expression(z, time))
+
+    def fisher_flat(self, z: Tensor, time: Tensor) -> Tensor:
+        """Derived positive Fisher embedding Psi=2 sqrt(E)."""
+        return 2.0 * torch.exp(0.5 * self.log_expression(z, time))
+
+    def psi(self, z: Tensor, time: Tensor) -> Tensor:
         return self.fisher_flat(z, time)
-
-    def expression(
-        self,
-        z: Tensor,
-        time: Tensor,
-    ) -> Tensor:
-        """Return E(z,t) = Psi(z,t)^2 / 4, excluding library exposure."""
-        psi = self.fisher_flat(z, time)
-        return 0.25 * psi.square()
-
-    def log_expression(
-        self,
-        z: Tensor,
-        time: Tensor,
-        *,
-        eps: float = 1e-8,
-    ) -> Tensor:
-        """Return log E(z,t) for compatibility; Stage 2 uses Psi directly."""
-        return torch.log(
-            self.expression(z, time).clamp_min(
-                float(eps)
-            )
-        )
 
     def nuisance_effect_matrix(
         self,
@@ -506,7 +416,7 @@ class FlowSTPModel(nn.Module):
         if effect is None:
             return torch.zeros(
                 (),
-                device=self.psi_baseline.device,
+                device=self.log_expression_baseline.device,
             )
 
         return effect.square().mean()
@@ -530,14 +440,10 @@ class FlowSTPModel(nn.Module):
             slice_idx,
         ).reshape(-1)
 
-        psi = self.fisher_flat(
-            z,
-            time,
-        )
-        expression = 0.25 * psi.square()
-        log_mu = torch.log(
-            expression.clamp_min(1e-8)
-        )
+        eta = self.log_expression(z, time)
+        log_mu = eta
+        expression = torch.exp(eta)
+        psi = 2.0 * torch.exp(0.5 * eta)
 
         if log_library_size is not None:
             log_mu = (
@@ -835,12 +741,10 @@ class FlowSTPModel(nn.Module):
 @dataclass(frozen=True)
 class Stage1ARunConfig:
     output_dir: Path = Path(
-        "flow_stp_stage1a_library_offset_fisher_flat_v1"
+        "flow_stp_stage1a_shared_logE_global_gauge_v1"
     )
 
-    # Primary model: direct Fisher-flat Psi(z,t) fit through a Poisson
-    # likelihood with a library-size exposure offset. Optional
-    # coordinate/nuisance regularizers are off by default.
+    # Selected log-expression Poisson model; optional penalties are disabled.
     submersion_weight: float = 0.0
     scale_variation_weight: float = 0.0
     coverage_prior_weight: float = 0.0
@@ -850,7 +754,7 @@ class Stage1ARunConfig:
     # Optimization.
     epochs: int = 1500
     batch_size_per_slice: int = 1024
-    learning_rate: float = 1e-3
+    learning_rate: float = 2e-3
     weight_decay: float = 1e-5
     grad_clip_norm: Optional[float] = 5.0
     print_every: int = 100
@@ -861,13 +765,10 @@ class Stage1ARunConfig:
     seed: int = 20260622
     resume: bool = True
 
-    # Geometry / coordinate map. These fields define the three supported
-    # Stage-1 coordinate choices:
-    #   independent + per_tissue
-    #   shared_time + per_tissue
-    #   shared_time + global
-    coordinate_decoder: str = "independent"
-    gauge_mode: str = "per_tissue"
+    # Active shared-coordinate model chooses tissue conditioning automatically
+    # from the number of physical slices at each observed time.
+    coordinate_decoder: str = "shared_auto"
+    gauge_mode: str = "global"
 
     coord_grad_min: float = 0.05
     coord_grad_samples_per_slice: Optional[int] = 128
@@ -1196,7 +1097,7 @@ def _build_library_offsets(
     return offsets
 
 
-def _initial_fisher_flat_baseline(
+def _initial_log_expression_baseline(
     data,
     *,
     chunk_size: int = 65536,
@@ -1251,12 +1152,7 @@ def _initial_fisher_flat_baseline(
         / float(n_total)
     ).clamp_min(1e-4)
 
-    return (
-        2.0
-        * torch.sqrt(
-            mean_expression
-        )
-    ).float()
+    return torch.log(mean_expression).float()
 
 
 def _prepare_data(
@@ -1567,8 +1463,10 @@ def _make_model_config(
         num_genes=int(
             data["n_genes"]
         ),
-        coordinate_decoder=str(
-            config.coordinate_decoder
+        seed=int(config.seed),
+        coordinate_decoder=(
+            "shared_time_tissue" if len(np.unique(data["raw_times"])) < data["n_slices"]
+            else "shared_time"
         ),
         gauge_mode=str(
             config.gauge_mode
@@ -2481,17 +2379,11 @@ def run_stage1a(
         str(config.coordinate_decoder),
         str(config.gauge_mode),
     )
-    supported_coordinate_choices = {
-        ("independent", "per_tissue"),
-        ("shared_time", "per_tissue"),
-        ("shared_time", "global"),
-    }
-    if coordinate_choice not in supported_coordinate_choices:
+    if coordinate_choice != ("shared_auto", "global"):
         raise ValueError(
-            "Unsupported Stage-1 coordinate choice "
-            f"{coordinate_choice!r}. Supported choices are "
-            "independent/per_tissue, shared_time/per_tissue, and "
-            "shared_time/global."
+            "The frozen runner requires shared_auto/global; "
+            "previous independent and per-tissue variants are archived. "
+            f"Received {coordinate_choice!r}."
         )
 
     output_dir = (
@@ -2702,7 +2594,7 @@ def run_stage1a(
 
         if (
             saved_model_config.coordinate_decoder
-            != str(config.coordinate_decoder)
+            != model_config.coordinate_decoder
             or saved_model_config.gauge_mode
             != str(config.gauge_mode)
         ):
@@ -2754,12 +2646,6 @@ def run_stage1a(
                 model_config
             )
             .to(device)
-        )
-
-        model.initialize_fisher_flat_baseline_(
-            _initial_fisher_flat_baseline(
-                data
-            )
         )
 
         _refresh_gauge(
@@ -2851,7 +2737,7 @@ def run_stage1a(
             )
             if (
                 checkpoint_model_config.coordinate_decoder
-                != str(config.coordinate_decoder)
+                != model_config.coordinate_decoder
                 or checkpoint_model_config.gauge_mode
                 != str(config.gauge_mode)
             ):
@@ -3226,7 +3112,7 @@ def run_stage1a(
                     config.slice_effect_dim
                 ),
             "expression_parameterization":
-                "direct_fisher_flat_psi",
+                "log_E",
             "coordinate_decoder":
                 str(config.coordinate_decoder),
             "coordinate_gauge":
