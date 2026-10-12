@@ -73,6 +73,9 @@ class AnatomicalContourField:
         z_grid: np.ndarray,
         *,
         tissue_mask: np.ndarray | None = None,
+        assume_rectangular_domain: bool = False,
+        min_gradient_norm: float = 1e-6,
+        min_orientation_cosine: float = 0.5,
     ) -> None:
         try:
             import contourpy
@@ -88,13 +91,31 @@ class AnatomicalContourField:
             raise ValueError("x and y must be strictly increasing finite arrays of length >=3.")
         if z.shape != (len(self.y), len(self.x)) or not np.isfinite(z).all():
             raise ValueError("z_grid must be finite and have shape (len(y), len(x)).")
+        if tissue_mask is None and not assume_rectangular_domain:
+            raise ValueError(
+                "Supply tissue_mask for the actual tissue domain, or explicitly set "
+                "assume_rectangular_domain=True for a verified rectangular tissue."
+            )
         if tissue_mask is not None:
             mask = np.asarray(tissue_mask, dtype=bool)
             if mask.shape != z.shape:
                 raise ValueError("tissue_mask shape must match z_grid.")
         else:
             mask = np.ones_like(z, dtype=bool)
+        if not mask.any():
+            raise ValueError("tissue_mask must contain at least one tissue grid point.")
+        if not np.isfinite(min_gradient_norm) or min_gradient_norm <= 0:
+            raise ValueError("min_gradient_norm must be strictly positive and finite.")
+        if not np.isfinite(min_orientation_cosine) or not 0 < min_orientation_cosine <= 1:
+            raise ValueError("min_orientation_cosine must be in (0,1].")
         self.mask = mask
+        self.min_gradient_norm = float(min_gradient_norm)
+        self.min_orientation_cosine = float(min_orientation_cosine)
+        self.max_grid_step = float(np.hypot(np.max(np.diff(self.x)), np.max(np.diff(self.y))))
+        self._mask_at = RegularGridInterpolator(
+            (self.y, self.x), mask.astype(float), method="nearest",
+            bounds_error=False, fill_value=0.,
+        )
         masked_z = np.ma.array(z, mask=~mask)
         self._generator = contourpy.contour_generator(
             x=self.x, y=self.y, z=masked_z, name="serial",
@@ -123,16 +144,18 @@ class AnatomicalContourField:
                 self._grad_y(mid[:, ::-1]),
             ))
             tangent = np.diff(contour.xy, axis=0)
+            gradient_norm = np.linalg.norm(gradient, axis=1)
+            if np.any(~np.isfinite(gradient_norm)) or np.min(gradient_norm) < self.min_gradient_norm:
+                raise ValueError("Contour gradient is below min_gradient_norm; anatomical axis is poorly conditioned.")
             rotated = np.column_stack((-gradient[:, 1], gradient[:, 0]))
-            alignment = float(np.einsum('ij,ij->', tangent, rotated))
-            norm_scale = float(
-                np.linalg.norm(tangent, axis=1).sum() *
-                max(np.linalg.norm(gradient, axis=1).mean(), 1e-12)
+            signed_cosine = np.einsum('ij,ij->i', tangent, rotated) / (
+                np.linalg.norm(tangent, axis=1) * gradient_norm
             )
-            if not np.isfinite(alignment) or abs(alignment) <= 1e-10 * norm_scale:
-                raise ValueError(
-                    "Contour orientation is ambiguous (vanishing/inconsistent gradient)."
-                )
+            if (np.any(~np.isfinite(signed_cosine)) or
+                np.min(np.abs(signed_cosine)) < self.min_orientation_cosine or
+                np.any(np.sign(signed_cosine) != np.sign(signed_cosine[0]))):
+                raise ValueError("Contour orientation is ambiguous or locally inconsistent.")
+            alignment = float(np.dot(np.linalg.norm(tangent, axis=1), signed_cosine))
             if alignment < 0:
                 contour = OrientedContour.from_xy(contour.xy[::-1])
             out.append(contour)
@@ -156,6 +179,9 @@ class AnatomicalContourField:
         y: np.ndarray,
         *,
         tissue_mask: np.ndarray | None = None,
+        assume_rectangular_domain: bool = False,
+        min_gradient_norm: float = 1e-6,
+        min_orientation_cosine: float = 0.5,
         batch_size: int = 8192,
     ) -> "AnatomicalContourField":
         """Evaluate fitted Stage1AResult alpha on a physical XY grid."""
@@ -195,6 +221,9 @@ class AnatomicalContourField:
         return cls(
             x, y, np.concatenate(values).reshape(xx.shape),
             tissue_mask=tissue_mask,
+            assume_rectangular_domain=assume_rectangular_domain,
+            min_gradient_norm=min_gradient_norm,
+            min_orientation_cosine=min_orientation_cosine,
         )
 
 
@@ -211,15 +240,30 @@ def reconstruct_by_arclength(
     target_depth: float,
     source_field: AnatomicalContourField,
     target_field: AnatomicalContourField,
+    *,
+    max_source_distance: float | None = None,
 ) -> ArclengthReconstruction:
     """Predict XY endpoint via constant normalized contour arclength.
 
     No true destination is used. Requires single open contours with
     consistent anatomical orientation and XY handedness.
     """
+    xy = np.asarray(source_xy, dtype=float)
+    if xy.shape != (2,) or not np.isfinite(xy).all():
+        raise ValueError("source_xy must be a finite physical XY position.")
+    if source_field._mask_at(xy[::-1]).item() < 0.5:
+        raise ValueError("Source XY lies outside the supplied tissue domain.")
+    limit = 2. * source_field.max_grid_step if max_source_distance is None else float(max_source_distance)
+    if not np.isfinite(limit) or limit < 0:
+        raise ValueError("max_source_distance must be nonnegative and finite.")
     initial = source_field.unique_contour(source_depth)
+    _, fraction, distance = initial.project(xy)
+    if distance > limit:
+        raise ValueError(
+            f"Source cell is {distance:.5g} from its anatomical contour, "
+            f"exceeding allowed distance {limit:.5g}; check depth, grid, and registration."
+        )
     target = target_field.unique_contour(target_depth)
-    _, fraction, distance = initial.project(source_xy)
     return ArclengthReconstruction(
         xy=target.at_fraction(fraction),
         source_fraction=fraction,
