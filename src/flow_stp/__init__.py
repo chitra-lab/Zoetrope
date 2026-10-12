@@ -24,6 +24,13 @@ from .stage2 import (
     fit_trajectory_velocity,
     physical_velocity,
 )
+from .tissue_coordinates import (
+    AnatomicalContourField,
+    OrientedContour,
+    ArclengthReconstruction,
+    reconstruct_by_arclength,
+    oracle_nearest_contour_point,
+)
 
 __all__ = [
     "METHOD_VERSION", "FlowSTPConfig", "FlowSTPModel",
@@ -33,4 +40,6 @@ __all__ = [
     "integrate_flow_rk4",
     "RefinementConfig", "RefinedVelocityField", "RefinementResult",
     "fit_trajectory_velocity", "physical_velocity",
+    "AnatomicalContourField", "OrientedContour", "ArclengthReconstruction",
+    "reconstruct_by_arclength", "oracle_nearest_contour_point",
 ]
