@@ -144,3 +144,26 @@ clean state schema; older source versions cannot read them. Network initializati
 log-E likelihood and pooled gauge are preserved. Removing clamped endpoint
 parameters also removes their contribution to gradient clipping, so training is
 not promised to be bit-for-bit identical to pre-cleanup runs.
+
+
+## Tissue-space reconstruction and safety checks
+
+The recommended XY endpoint imputation preserves oriented **normalized
+contour arclength** between the source contour at `a` and the target contour
+at `F(a,t)`. See
+[the reconstruction guide](docs/tissue_coordinate_reconstruction.md).
+This requires a tissue mask (or an explicitly verified rectangular domain),
+a nondegenerate anatomical gradient, and a source point consistent with its
+level set. It does **not** identify a unique biological material trajectory.
+
+For synthetic evaluation, `evaluate_arclength_vs_oracle` compares the
+non-oracle reconstructed endpoint with a separate closest-to-true-destination
+contour oracle, reports paired displacement NRMSE and records reconstruction
+coverage. For Stage 2, `audit_flow_observability` flags low Fisher tangent
+energy along stored RK4 nodes without modifying the inferred velocity.
+
+Run targeted tests with:
+
+```bash
+pytest -q tests/test_tissue_coordinates.py tests/test_stage2_observability.py tests/test_arclength_displacement.py
+```

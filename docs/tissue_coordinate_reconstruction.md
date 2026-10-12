@@ -98,3 +98,62 @@ is from the extracted source contour, serving as a numerical grid diagnostic.
 - `oracle_nearest_contour_point(true_destination_xy,target_depth,target_field)`
 
 Tests: `pytest -q tests/test_tissue_coordinates.py`.
+
+## Before running learned-contour displacement benchmarks
+
+The source and target fields must be restricted to actual tissue domains:
+
+```python
+source = AnatomicalContourField.from_stage1a(
+    result, tissue_id=0, x=x0, y=y0, tissue_mask=mask0,
+)
+target = AnatomicalContourField.from_stage1a(
+    result, tissue_id=1, x=x1, y=y1, tissue_mask=mask1,
+)
+```
+
+A mask is now required by default. For a genuinely rectangular domain,
+pass `assume_rectangular_domain=True` explicitly. The extractor rejects
+contours with gradient norm below `min_gradient_norm` (default `1e-6`)
+or tangents inconsistent with the rotated anatomical gradient. Source
+cells must lie in the source tissue domain and no farther than two grid
+diagonals from their declared level set (override with
+`max_source_distance` when the coordinate-grid accuracy justifies it).
+These checks detect poor learned-coordinate geometry; they do not repair it.
+
+The paired benchmark helper evaluates both methods on **the same**
+predicted contours and exact same held-out cells:
+
+```python
+from flow_stp.simulations.arclength_displacement import (
+    evaluate_arclength_vs_oracle,
+)
+comparison = evaluate_arclength_vs_oracle(
+    source_xy, true_target_xy,
+    source_depth, predicted_target_depth,
+    source, target,
+    on_error="record",  # or "raise" to fail on first invalid cell
+)
+print(comparison.summary)
+comparison.per_cell.to_csv("paired_contour_endpoints.csv", index=False)
+```
+
+When `on_error="record"`, the success fraction must be reported with the
+paired NRMSE values, since selective contour failures can bias metrics.
+No prediction uses the true destination; only the oracle lower bound
+and evaluation use it.
+
+For Fisher velocity diagnostics without modifying the ODE:
+
+```python
+from flow_stp.stage2 import audit_flow_observability
+report = audit_flow_observability(
+    result.model.fisher_flat, trajectory, eps=1e-8,
+)
+print(report.summary())
+```
+
+The default observability threshold detects when epsilon is at least 1% of
+the Fisher tangent-energy denominator. This audit checks saved trajectory
+nodes only, not every intermediate RK4 substep. Report the flagged fraction
+before interpreting low-observability velocities as migration.

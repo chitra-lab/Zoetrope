@@ -23,6 +23,8 @@ from .stage2 import (
     RefinementResult,
     fit_trajectory_velocity,
     physical_velocity,
+    FlowObservabilityReport,
+    audit_flow_observability,
 )
 from .tissue_coordinates import (
     AnatomicalContourField,
@@ -40,6 +42,7 @@ __all__ = [
     "integrate_flow_rk4",
     "RefinementConfig", "RefinedVelocityField", "RefinementResult",
     "fit_trajectory_velocity", "physical_velocity",
+    "FlowObservabilityReport", "audit_flow_observability",
     "AnatomicalContourField", "OrientedContour", "ArclengthReconstruction",
     "reconstruct_by_arclength", "oracle_nearest_contour_point",
 ]
