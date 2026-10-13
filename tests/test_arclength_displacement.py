@@ -5,15 +5,20 @@ from flow_stp.tissue_coordinates import AnatomicalContourField
 from flow_stp.simulations.arclength_displacement import evaluate_arclength_vs_oracle
 
 
-def field(shift=0.):
+def field(shift=0., polygon=False):
     x = np.linspace(-1, 1, 101) + shift
     y = np.linspace(0, 1, 71)
     z = np.meshgrid(x,y)[1]
-    return AnatomicalContourField(x,y,z,assume_rectangular_domain=True)
+    kwargs = dict(assume_rectangular_domain=True)
+    if polygon:
+        pytest.importorskip("shapely")
+        kwargs = dict(tissue_polygon=[[x[0],0],[x[-1],0],[x[-1],1],[x[0],1]])
+    return AnatomicalContourField(x,y,z,**kwargs)
 
 
-def test_paired_truth_evaluation_does_not_leak_oracle_information():
-    source,target = field(),field(.2)
+@pytest.mark.parametrize("polygon",[False,True])
+def test_paired_truth_evaluation_does_not_leak_oracle_information(polygon):
+    source,target = field(polygon=polygon),field(.2,polygon=polygon)
     initial=np.array([[.25,.2],[-.6,.3]])
     truth=initial+np.array([.2,.5])
     first=evaluate_arclength_vs_oracle(
