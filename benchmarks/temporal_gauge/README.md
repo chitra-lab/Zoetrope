@@ -26,8 +26,16 @@ parallel fits. Report output is specified independently with `analyze.py --outpu
 The comparison uses 1,500 epochs and 256 cells per tissue per update; it is an
 economical experiment, not a reproduction of the default 1,024-cell batch.
 Development B has three paired training seeds. Additional checks use independent
-Regime A (zero true progression) and four observed ages. These additional settings
+Regime A (zero true progression) and two subsets of four observed ages (one without
+rigid rotations, one retaining two rotated sections). These additional settings
 are single-seed checks. No withheld physical-tissue generalization is claimed.
+
+Fourteen fits completed. No production change is recommended. Across three
+ten-age B seeds, baseline versus tissue-range mean gauge distortion was
+0.02155 versus 0.03958 and material-flow NRMSE 0.5815 versus 0.6881.
+Tissue-range normalization improved the first pilot and both four-age controls,
+but was unstable across ten-age seeds and worsened material-flow NRMSE on
+held-out A. Gradient/Hessian pilot penalties did not provide a reliable win.
 
 Gauge drift is not equivalent to correspondence error: exact Fisher flow obeys
 `V_tilde = h_z V + h_t`, the flow map transforms covariantly, and the residual and

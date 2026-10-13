@@ -23,12 +23,12 @@ def main():
     rows=[]
     expected=[f'{candidate}_s{seed}' for seed in [20260622,20260623,20260624] for candidate in ['baseline','tissue_range']]
     expected+=['eikonal_s20260622','normal_hessian_s20260622']
-    expected+=[f'{candidate}_{setting}_s20260622' for setting in ['A_heldout','B_4ages'] for candidate in ['baseline','tissue_range']]
+    expected+=[f'{candidate}_{setting}_s20260622' for setting in ['A_heldout','B_4ages','B_4ages_rotated'] for candidate in ['baseline','tissue_range']]
     for name in expected:
         d=json.loads((a.root/name/'gauge_results.json').read_text())
         assert d['evaluation_version']==2, name
         settings=json.loads((a.root/name/'experiment_settings.json').read_text())
-        row=dict(run=name,setting='A held-out' if 'A_heldout' in name else 'B 4 ages' if 'B_4ages' in name else 'B 10 ages',
+        row=dict(run=name,setting='A held-out' if 'A_heldout' in name else 'B 4 ages rotated' if 'B_4ages_rotated' in name else 'B 4 ages' if 'B_4ages' in name else 'B 10 ages',
             candidate=settings['candidate'],seed=settings['seed'],status='completed',
             epochs=settings['epochs'],batch=settings['batch'],weight=settings['weight'],
             gauge=d['gauge_distortion'],ordering=d['ordering_spearman_mean'],anatomy=d['heldout_anatomy_rmse'],
@@ -90,7 +90,7 @@ Temporal gauge drift alters the numerical interpretation of velocity; it does **
 - `z_true` is the radial anatomical depth on [0,1] across every age. `u_true` is the transverse/longitudinal coordinate, not the anatomical estimand called u in the task description. Rotation, translation, curvature and thickness change across tissues. Each tissue spans the same intrinsic depth support; evaluation uses [0.05,0.95].
 - Training receives only public raw counts, observed XY, time, tissue identity and gene names. Hidden material labels, depths, rates and velocities enter evaluation only. Public exposure offsets are exactly the production count-total offsets; true synthetic library factors are never used for fitting.
 - True migration follows dz/dt=1.8 z(1−z)[1+0.45(2z−1)][1−0.9(3t²−2t³)]. True F is its RK4 solution from material a. Regime B adds orthogonal differentiation: exact intrinsic Fisher flow agrees with prescribed migration. True ρ integrates the molecular residual speed along material a, rather than inferring it from observed counts.
-- Held-out synthetic setting: Regime A (pure transport), independent data seed 20261009, same crescent geometry and 10 ages. True molecular progression is zero; absolute ρ error is reported. Four-age sensitivity uses original tissues 0,3,6,9 from the development generator, with unchanged time values and physical truth.
+- Held-out synthetic setting: Regime A (pure transport), independent data seed 20261009, same crescent geometry and 10 ages. True molecular progression is zero; absolute ρ error is reported. Four-age sensitivity uses original tissues 0,3,6,9 and a second subset 0,2,5,9, with unchanged time values and physical truth. The first excludes all rotated sections; the second retains two rotated sections. Neither gives a pure effect of time-point count with geometry fully controlled.
 
 ## Protocol and evaluation
 
@@ -102,7 +102,7 @@ Gauge bootstrap intervals resample cells within each tissue (100 repeats); these
 
 **Fixed-gauge F** uses the inverse pooled curve. **Material F** uses the target age’s inverse calibration and compares to known material trajectories. Both accept fixed nonlinear reparameterization. Unsupported inverse predictions remain NaN and are explicitly counted; reported F errors are conditional on coverage, so coverage must accompany scores. Anchors span true initial depths 0.10–0.75.
 
-**Physical contour correspondence** starts from actual source points at five transverse locations and 51 depths, computes each point’s actual learned coordinate, integrates the frozen Stage-2 field, and measures distance from the true material destination to the actual learned target level set. Target contours are evaluated on a 257×193 intrinsic mesh mapped into registered physical geometry; scalar distance uses closest line-segment points. It is a contour oracle diagnostic, **not** a prediction of a unique XY endpoint or an arclength reconstruction. No sequencer rotation/translation is counted as migration. Coverage is reported; all successful curves and full predictions are retained. This diagnostic uses truth geometry for evaluation only.
+**Physical contour correspondence** starts from actual source points at five transverse locations and 51 depths, computes each point’s actual learned coordinate, integrates the frozen Stage-2 field, and measures distance from the true material destination to the actual learned target level set. Target contours are evaluated on a 257×193 intrinsic mesh mapped into registered physical geometry; scalar distance uses closest line-segment points. It is a contour oracle diagnostic, **not** a prediction of a unique XY endpoint or an arclength reconstruction. No sequencer rotation/translation is counted as migration. Coverage and aggregate physical distance are retained, together with calibration curves and axial trajectory arrays. This diagnostic uses truth geometry for evaluation only.
 
 ρ is integrated by trapezoidal quadrature of the unmodified Stage-2 orthogonal speed along stored RK4 nodes. Regime-B scores compare with original generating biological rates. Production count-total exposures can absorb biological variation in total expected expression, so absolute ρ errors cannot be attributed exclusively to gauge. NLL below is balanced equally across ages; the cell-weighted production NLL is also preserved in CSV/JSON.
 
@@ -126,7 +126,9 @@ The first-seed range-normalization gains do not generalize across seeds. One add
 
 {confirmation}
 
-These are completed single-seed robustness checks, not multi-seed generalization evidence. The candidate was chosen from development B before inspecting the held-out A outcome; no subsequent tuning used A. Regime A changes the molecular dynamics and random data realization, while keeping the same family of geometries. Four ages test sampling density in time; no missing-time truth is supplied to the fitter. No genuinely held-out physical-tissue benchmark is claimed: each age has one independently transformed section and no supplied correspondence/registration for a withheld slice.
+These are completed single-seed robustness checks, not multi-seed generalization evidence. The candidate was chosen from development B before inspecting the held-out A outcome; no subsequent tuning used A. Regime A changes molecular dynamics and random realization within the same geometry family. The first four-age subset removes all rigidly rotated sections, which confounds any apparent gain from fewer ages. The rotated four-age check addresses this partially but does not retain every original geometry. No missing-time truth enters fitting. No genuinely held-out physical-tissue benchmark is claimed: each age has one independently transformed section and no supplied correspondence/registration for a withheld slice.
+
+The rotated four-age check is a positive, context-dependent result for tissue-range normalization: material-flow NRMSE falls from 0.3574 to 0.1711, physical-contour NRMSE from 0.6767 to 0.1242, and progression relative RMSE stays similar (0.5332 versus 0.5314). This supports further controlled development of an anatomy-anchored ruler, but does not override the failed three-seed ten-age confirmation. With one tissue per age, the selected model uses time-only coordinate conditioning; discontinuously rotated sections must be represented through that smooth time-conditioned map. The difference between four and ten ages warrants an architectural/optimization diagnostic, but it does not establish that rotations alone caused the ten-age failures.
 
 ## All completed runs and coverage
 

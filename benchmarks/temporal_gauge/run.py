@@ -201,11 +201,15 @@ def main():
     p.add_argument('--weight',type=float,default=.01)
     p.add_argument('--ages',type=int,default=10,choices=[4,10])
     p.add_argument('--generate-only',action='store_true')
+    p.add_argument('--selected-tissues',default=None,help='Optional four original tissue indices, including 0 and 9')
     a=p.parse_args();torch.set_num_threads(2)
     if not a.dataset.exists():
         simulated=generate(Config(cells_at_t0=a.cells,regime=a.regime,seed=a.data_seed))
         if a.ages==4:
-            selected=[0,3,6,9];mask=simulated['observed'].tissue_id.isin(selected).to_numpy()
+            selected=[int(x) for x in a.selected_tissues.split(',')] if a.selected_tissues else [0,3,6,9]
+            if len(selected)!=4 or selected!=sorted(set(selected)) or selected[0]!=0 or selected[-1]!=9:
+                raise ValueError('Choose four distinct increasing original tissues including 0 and 9')
+            mask=simulated['observed'].tissue_id.isin(selected).to_numpy()
             for key in ['observed','hidden','counts','rates']:
                 simulated[key]=simulated[key].loc[mask].reset_index(drop=True)
             simulated['observed']['tissue_id']=simulated['observed'].tissue_id.map({s:i for i,s in enumerate(selected)})
