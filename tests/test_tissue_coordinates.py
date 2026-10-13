@@ -132,3 +132,101 @@ def test_contour_mask_changes_correspondence_in_wedge():
         AnatomicalContourField(x,y,yy,assume_rectangular_domain=True),
         AnatomicalContourField(x,y,yy,assume_rectangular_domain=True))
     assert abs(pred.xy[0] - wrong.xy[0]) > .1
+
+
+def polygon_field(depth_grid=None, polygon=None, **kwargs):
+    pytest.importorskip("shapely")
+    x = np.linspace(-1.1,1.1,61)
+    y = np.linspace(-.5,.5,51)
+    xx,yy = np.meshgrid(x,y)
+    if polygon is None:
+        polygon = [[-1,-.2],[1,.2],[1,.3],[-1,-.1]]
+    return AnatomicalContourField(x,y,yy-.2*xx if depth_grid is None else depth_grid,
+                                 tissue_polygon=polygon,**kwargs)
+
+
+@pytest.mark.parametrize('depth',[0.,1e-7,.05,.1-1e-7,.1])
+def test_polygon_keeps_complete_contours_at_ribbon_boundaries(depth):
+    f = polygon_field()
+    c = f.unique_contour(depth)
+    np.testing.assert_allclose(c.xy[[0,-1]],[[1,.2+depth],[-1,-.2+depth]],atol=1e-12)
+    assert c.length == pytest.approx(np.hypot(2,.4),abs=1e-12)
+    assert f.contains(c.xy[0])
+
+
+def test_polygon_recovers_near_boundary_fragments_without_joining():
+    f = polygon_field()
+    xx,yy = np.meshgrid(f.x,f.y)
+    mask = (xx >= -1)&(xx <= 1)&(yy-.2*xx >= 0)&(yy-.2*xx <= .1)
+    masked = AnatomicalContourField(f.x,f.y,yy-.2*xx,tissue_mask=mask)
+    fragments = masked.contours(1e-7)
+    assert len(fragments) != 1 or fragments[0].length < .95*np.hypot(2,.4)
+    c = f.unique_contour(1e-7)
+    assert len(c.xy) > 2
+    assert c.xy[0,0] > c.xy[-1,0]
+
+
+def test_polygon_clipping_preserves_disconnected_topology():
+    pytest.importorskip("shapely")
+    x = np.linspace(-2,2,61)
+    y = np.linspace(-1,2,61)
+    xx,yy = np.meshgrid(x,y)
+    # A connected U-shaped tissue has two disjoint level-set components at y=1.
+    polygon = [[-1,0],[1,0],[1,1.5],[.5,1.5],[.5,.5],[-.5,.5],[-.5,1.5],[-1,1.5]]
+    f = AnatomicalContourField(x,y,yy,tissue_polygon=polygon)
+    with pytest.raises(ValueError,match='2 contours'):
+        f.unique_contour(1.)
+
+
+def test_polygon_rejects_bad_geometry_and_truncated_grid():
+    with pytest.raises(ValueError,match='valid simple polygon'):
+        polygon_field(polygon=[[-1,-.2],[1,.3],[-1,.3],[1,-.2]])
+    with pytest.raises(ValueError,match='cover the entire'):
+        polygon_field(polygon=[[-2,0],[2,0],[2,.2],[-2,.2]])
+    with pytest.raises(ValueError,match='not both'):
+        polygon_field(tissue_mask=np.ones((51,61),bool))
+    f = polygon_field()
+    with pytest.raises(ValueError,match='outside'):
+        reconstruct_by_arclength([0,.2],.05,.05,f,f)
+
+
+def test_polygon_retains_gradient_and_closed_loop_checks():
+    pytest.importorskip("shapely")
+    x = np.linspace(-1,1,61)
+    y = np.linspace(-1,1,61)
+    xx,yy = np.meshgrid(x,y)
+    polygon = [[-.9,-.9],[.9,-.9],[.9,.9],[-.9,.9]]
+    f = AnatomicalContourField(x,y,1e-12*yy,tissue_polygon=polygon)
+    with pytest.raises(ValueError,match='min_gradient_norm'):
+        f.unique_contour(0.)
+    f = AnatomicalContourField(x,y,xx*xx+yy*yy,tissue_polygon=polygon)
+    with pytest.raises(ValueError,match='Closed contours'):
+        f.unique_contour(.25)
+
+
+def test_polygon_orientation_reverses_with_anatomical_sign():
+    f = polygon_field()
+    xx,yy = np.meshgrid(f.x,f.y)
+    flipped = polygon_field(depth_grid=-(yy-.2*xx))
+    forward = f.unique_contour(.05)
+    backward = flipped.unique_contour(-.05)
+    np.testing.assert_allclose(forward.xy[[0,-1]],backward.xy[[-1,0]],atol=1e-12)
+
+
+def test_cache_is_bounded_exact_and_contours_are_read_only():
+    f = polygon_field(cache_size=2)
+    first = f.unique_contour(.03)
+    assert f.unique_contour(.03) is first
+    assert f.unique_contour(.03+1e-8) is not first
+    f.unique_contour(.04)
+    assert len(f._contour_cache) == 2
+    assert .03 not in f._contour_cache
+    with pytest.raises(ValueError):
+        first.xy[0,0] = 99
+    with pytest.raises(ValueError):
+        first.cumulative_length[0] = 99
+    f = polygon_field(cache_size=0)
+    assert f.unique_contour(.03) is not f.unique_contour(.03)
+    with pytest.raises(ValueError,match='nonnegative integer'):
+        polygon_field(cache_size=-1)
+

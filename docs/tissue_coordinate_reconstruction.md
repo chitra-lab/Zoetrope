@@ -65,8 +65,8 @@ is from the extracted source contour, serving as a numerical grid diagnostic.
 ## Assumptions and limitations
 
 - All contours must be connected, open, regular and contained within a
-  supplied tissue mask (if the bounding box contains non-tissue regions,
-  supply a mask). Closed loops and multiple disconnected components are
+  supplied tissue mask or polygon (if the bounding box contains non-tissue
+  regions, supply the actual domain). Closed loops and multiple disconnected components are
   deliberately rejected instead of silently inventing a correspondence.
 - Increasing anatomical `z` must mean the same thing across tissues; the
   physical XY coordinate planes must also have consistent handedness.
@@ -87,6 +87,53 @@ is from the extracted source contour, serving as a numerical grid diagnostic.
 - Existing Regime B ground-truth geometry-only comparisons were encouraging,
   but recovery using held-out **learned** anatomical contours remains to be
   tested with the frozen Stage 1 checkpoint.
+
+## Boundary-aware extraction
+
+When an observed tissue boundary polygon is available, prefer polygon clipping:
+
+```python
+source = AnatomicalContourField.from_stage1a(
+    result, tissue_id=0, x=x0, y=y0, tissue_polygon=boundary0,
+)
+target = AnatomicalContourField.from_stage1a(
+    result, tissue_id=1, x=x1, y=y1, tissue_polygon=boundary1,
+)
+```
+
+Install the optional dependency with `pip install -e '.[geometry]'`.
+`tissue_polygon` is an ordered array of physical XY vertices describing one
+valid simple polygon (holes are not supported by this array API). The grid
+must cover the entire polygon; a small exterior margin is recommended. The
+coordinate field must be finite and reliable up to and immediately outside
+the tissue boundary. Polygon geometry must come from allowed observed tissue
+information in a learned-model benchmark, never from hidden destinations.
+Supplying both `tissue_mask` and `tissue_polygon` raises an error.
+
+The extractor traces the level set on the enclosing grid, intersects it with
+the polygon, and joins only exactly shared endpoints produced by geometric
+intersection. It does not bridge contour gaps, select the longest component,
+or replace normalized arclength with a material transverse coordinate.
+The original orientation, gradient, source-distance, and topology checks
+remain in force. Point membership allows only a machine-roundoff tolerance
+at polygon edges; contours themselves are not buffered. A level set that
+touches the tissue only at an isolated point is not a reconstructable contour.
+
+Mask mode remains available and retains `corner_mask=False`. Its fully masked
+grid-square rule can erase thin boundary strips or truncate contour endpoints.
+`corner_mask=True` is an optional diagnostic alternative, but it does not
+recover an accurate observed boundary and is not the recommended replacement.
+
+Each field caches up to 512 exact floating-point depth values; depths are not
+rounded or interpolated between cached contours. Set `cache_size=0` to disable
+caching or a smaller positive value to bound memory more tightly. Cached
+contour arrays and input-grid copies are read-only. Construct a new field if
+the coordinate grid, boundary, or validation thresholds change. Calls remain
+sequential; the mutable cache is not intended as a shared concurrent service.
+
+Reproducible geometry-only experiments and the comparison report are in
+`benchmarks/arclength/`. They use the frozen geometry recovered from the
+previous Regime B/D1 archive, without training or modifying Stage 1 or Stage 2.
 
 ## API
 
@@ -112,7 +159,7 @@ target = AnatomicalContourField.from_stage1a(
 )
 ```
 
-A mask is now required by default. For a genuinely rectangular domain,
+A tissue mask or polygon is required by default. For a genuinely rectangular domain,
 pass `assume_rectangular_domain=True` explicitly. The extractor rejects
 contours with gradient norm below `min_gradient_norm` (default `1e-6`)
 or tangents inconsistent with the rotated anatomical gradient. Source
@@ -157,3 +204,4 @@ The default observability threshold detects when epsilon is at least 1% of
 the Fisher tangent-energy denominator. This audit checks saved trajectory
 nodes only, not every intermediate RK4 substep. Report the flagged fraction
 before interpreting low-observability velocities as migration.
+

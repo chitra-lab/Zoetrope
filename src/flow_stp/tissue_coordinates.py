@@ -7,6 +7,7 @@ only. All distances are in supplied physical XY units.
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
+from collections import OrderedDict
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
@@ -19,7 +20,7 @@ class OrientedContour:
 
     @classmethod
     def from_xy(cls, points: np.ndarray) -> "OrientedContour":
-        xy = np.asarray(points, dtype=float)
+        xy = np.array(points, dtype=float, copy=True)
         if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2:
             raise ValueError("Contour must have at least two XY vertices.")
         if not np.isfinite(xy).all():
@@ -32,6 +33,8 @@ class OrientedContour:
         arc = np.r_[0., np.cumsum(seg)]
         if np.linalg.norm(xy[0] - xy[-1]) <= 1e-9 * max(1., arc[-1]):
             raise ValueError("Closed contours need an origin landmark; arclength is ambiguous.")
+        xy.setflags(write=False)
+        arc.setflags(write=False)
         return cls(xy=xy, length=float(arc[-1]), cumulative_length=arc)
 
     def at_fraction(self, u: float) -> np.ndarray:
@@ -62,8 +65,10 @@ class AnatomicalContourField:
     """Contour extractor on a finite physical XY grid.
 
     x, y strictly increase; z_grid has shape (len(y), len(x)).
-    tissue_mask optionally marks the valid tissue domain. Disconnected
-    contours, closed loops, and ambiguous orientation are rejected.
+    Supply a tissue_mask or a simple tissue_polygon. Polygon mode clips
+    full-grid contours to the boundary instead of eroding masked grid cells.
+    Disconnected contours, closed loops, and ambiguous orientation are rejected.
+    Contours use a bounded exact-depth cache (disable with cache_size=0).
     """
 
     def __init__(
@@ -73,17 +78,20 @@ class AnatomicalContourField:
         z_grid: np.ndarray,
         *,
         tissue_mask: np.ndarray | None = None,
+        tissue_polygon: np.ndarray | None = None,
         assume_rectangular_domain: bool = False,
         min_gradient_norm: float = 1e-6,
         min_orientation_cosine: float = 0.5,
+        corner_mask: bool = False,
+        cache_size: int = 512,
     ) -> None:
         try:
             import contourpy
         except ImportError as exc:
             raise ImportError("Install contourpy to extract iso-depth contours.") from exc
-        self.x = np.asarray(x, dtype=float)
-        self.y = np.asarray(y, dtype=float)
-        z = np.asarray(z_grid, dtype=float)
+        self.x = np.array(x, dtype=float, copy=True)
+        self.y = np.array(y, dtype=float, copy=True)
+        z = np.array(z_grid, dtype=float, copy=True)
         if (self.x.ndim != 1 or self.y.ndim != 1 or
             len(self.x) < 3 or len(self.y) < 3 or
             not np.isfinite(self.x).all() or not np.isfinite(self.y).all() or
@@ -91,13 +99,33 @@ class AnatomicalContourField:
             raise ValueError("x and y must be strictly increasing finite arrays of length >=3.")
         if z.shape != (len(self.y), len(self.x)) or not np.isfinite(z).all():
             raise ValueError("z_grid must be finite and have shape (len(y), len(x)).")
-        if tissue_mask is None and not assume_rectangular_domain:
+        if tissue_mask is not None and tissue_polygon is not None:
+            raise ValueError("Supply tissue_mask or tissue_polygon, not both.")
+        self._polygon = None
+        if tissue_polygon is not None:
+            try:
+                from shapely.geometry import Polygon
+            except ImportError as exc:
+                raise ImportError("Install flow-stp[geometry] for tissue_polygon clipping.") from exc
+            vertices = np.asarray(tissue_polygon, dtype=float)
+            if (vertices.ndim != 2 or vertices.shape[1] != 2 or len(vertices) < 3
+                or not np.isfinite(vertices).all()):
+                raise ValueError("tissue_polygon must contain at least three finite XY vertices.")
+            polygon = Polygon(vertices)
+            if not polygon.is_valid or polygon.area <= 0:
+                raise ValueError("tissue_polygon must be a valid simple polygon with positive area.")
+            lo_x, lo_y, hi_x, hi_y = polygon.bounds
+            if (lo_x < self.x[0] or hi_x > self.x[-1] or
+                lo_y < self.y[0] or hi_y > self.y[-1]):
+                raise ValueError("The coordinate grid must cover the entire tissue_polygon.")
+            self._polygon = polygon
+        if tissue_mask is None and self._polygon is None and not assume_rectangular_domain:
             raise ValueError(
-                "Supply tissue_mask for the actual tissue domain, or explicitly set "
+                "Supply tissue_mask or tissue_polygon for the actual tissue domain, or explicitly set "
                 "assume_rectangular_domain=True for a verified rectangular tissue."
             )
         if tissue_mask is not None:
-            mask = np.asarray(tissue_mask, dtype=bool)
+            mask = np.array(tissue_mask, dtype=bool, copy=True)
             if mask.shape != z.shape:
                 raise ValueError("tissue_mask shape must match z_grid.")
         else:
@@ -109,6 +137,13 @@ class AnatomicalContourField:
         if not np.isfinite(min_orientation_cosine) or not 0 < min_orientation_cosine <= 1:
             raise ValueError("min_orientation_cosine must be in (0,1].")
         self.mask = mask
+        self.x.setflags(write=False)
+        self.y.setflags(write=False)
+        self.mask.setflags(write=False)
+        if isinstance(cache_size, bool) or not isinstance(cache_size, (int, np.integer)) or cache_size < 0:
+            raise ValueError("cache_size must be a nonnegative integer.")
+        self.cache_size = int(cache_size)
+        self._contour_cache: OrderedDict[float, tuple[OrientedContour, ...]] = OrderedDict()
         self.min_gradient_norm = float(min_gradient_norm)
         self.min_orientation_cosine = float(min_orientation_cosine)
         self.max_grid_step = float(np.hypot(np.max(np.diff(self.x)), np.max(np.diff(self.y))))
@@ -119,7 +154,7 @@ class AnatomicalContourField:
         masked_z = np.ma.array(z, mask=~mask)
         self._generator = contourpy.contour_generator(
             x=self.x, y=self.y, z=masked_z, name="serial",
-            line_type="Separate", corner_mask=False,
+            line_type="Separate", corner_mask=corner_mask,
         )
         dz_dy, dz_dx = np.gradient(z, self.y, self.x)
         self._grad_x = RegularGridInterpolator(
@@ -129,11 +164,51 @@ class AnatomicalContourField:
             (self.y, self.x), dz_dy, bounds_error=True,
         )
 
+    def contains(self, point: np.ndarray) -> bool:
+        """Domain membership; polygon edges are included when a polygon is supplied."""
+        xy = np.asarray(point, dtype=float)
+        if xy.shape != (2,) or not np.isfinite(xy).all():
+            raise ValueError("Point must be a finite XY pair.")
+        if self._polygon is not None:
+            from shapely.geometry import Point
+            point = Point(xy)
+            # GEOS intersection coordinates can miss a polygon edge by a few
+            # ulps. This tolerance only covers floating-point roundoff; it
+            # neither enlarges clipped contours nor joins their components.
+            scale = max(np.max(np.abs(self.x)), np.max(np.abs(self.y)),
+                        np.ptp(self.x), np.ptp(self.y))
+            tolerance = 64*np.finfo(float).eps*scale
+            return bool(self._polygon.covers(point) or self._polygon.distance(point) <= tolerance)
+        return bool(self._mask_at(xy[::-1]).item() >= 0.5)
+
+    def _lines(self, depth: float) -> list[np.ndarray]:
+        lines = self._generator.lines(depth)
+        if self._polygon is None:
+            return lines
+        # Intersect full-grid level sets with the observed boundary. Merge only
+        # exactly shared endpoints, never bridge gaps or choose a component.
+        from shapely import line_merge
+        from shapely.geometry import LineString
+        clipped = []
+        for line in lines:
+            intersection = LineString(line).intersection(self._polygon)
+            if intersection.is_empty:
+                continue
+            intersection = line_merge(intersection)
+            parts = list(intersection.geoms) if hasattr(intersection, "geoms") else [intersection]
+            clipped.extend(np.asarray(part.coords) for part in parts
+                           if part.geom_type == "LineString" and part.length > 0)
+        return clipped
+
     def contours(self, depth: float) -> list[OrientedContour]:
         if not np.isfinite(depth):
             raise ValueError("Depth must be finite.")
+        key = float(depth)
+        if key in self._contour_cache:
+            self._contour_cache.move_to_end(key)
+            return list(self._contour_cache[key])
         out = []
-        for line in self._generator.lines(float(depth)):
+        for line in self._lines(key):
             points = np.asarray(line, dtype=float)
             if len(points) < 2:
                 continue
@@ -159,6 +234,10 @@ class AnatomicalContourField:
             if alignment < 0:
                 contour = OrientedContour.from_xy(contour.xy[::-1])
             out.append(contour)
+        if self.cache_size:
+            self._contour_cache[key] = tuple(out)
+            if len(self._contour_cache) > self.cache_size:
+                self._contour_cache.popitem(last=False)
         return out
 
     def unique_contour(self, depth: float) -> OrientedContour:
@@ -179,10 +258,13 @@ class AnatomicalContourField:
         y: np.ndarray,
         *,
         tissue_mask: np.ndarray | None = None,
+        tissue_polygon: np.ndarray | None = None,
         assume_rectangular_domain: bool = False,
         min_gradient_norm: float = 1e-6,
         min_orientation_cosine: float = 0.5,
         batch_size: int = 8192,
+        cache_size: int = 512,
+        corner_mask: bool = False,
     ) -> "AnatomicalContourField":
         """Evaluate fitted Stage1AResult alpha on a physical XY grid."""
         import torch
@@ -221,9 +303,12 @@ class AnatomicalContourField:
         return cls(
             x, y, np.concatenate(values).reshape(xx.shape),
             tissue_mask=tissue_mask,
+            tissue_polygon=tissue_polygon,
             assume_rectangular_domain=assume_rectangular_domain,
             min_gradient_norm=min_gradient_norm,
             min_orientation_cosine=min_orientation_cosine,
+            cache_size=cache_size,
+            corner_mask=corner_mask,
         )
 
 
@@ -251,7 +336,7 @@ def reconstruct_by_arclength(
     xy = np.asarray(source_xy, dtype=float)
     if xy.shape != (2,) or not np.isfinite(xy).all():
         raise ValueError("source_xy must be a finite physical XY position.")
-    if source_field._mask_at(xy[::-1]).item() < 0.5:
+    if not source_field.contains(xy):
         raise ValueError("Source XY lies outside the supplied tissue domain.")
     limit = 2. * source_field.max_grid_step if max_source_distance is None else float(max_source_distance)
     if not np.isfinite(limit) or limit < 0:
@@ -290,3 +375,4 @@ __all__ = [
     "AnatomicalContourField", "ArclengthReconstruction", "OrientedContour",
     "reconstruct_by_arclength", "oracle_nearest_contour_point",
 ]
+

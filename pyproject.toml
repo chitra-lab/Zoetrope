@@ -14,6 +14,7 @@ dependencies = ["numpy", "pandas", "torch>=2", "scipy", "h5py", "contourpy>=1.2"
 qian = ["scanpy"]
 notebooks = ["jupyter", "matplotlib"]
 test = ["pytest"]
+geometry = ["shapely>=2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -21,3 +22,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
