@@ -43,7 +43,7 @@ def main():
     reps=df[(df.setting=='B 10 ages')&df.candidate.isin(['baseline','tissue_range'])]
     stats=reps.groupby('candidate')[['gauge','F','contour','rho','NLL']].agg(['mean','std'])
     stats.to_csv(a.output/'seed_summary.csv')
-    fig,axes=plt.subplots(2,2,figsize=(11,8),sharex=True,sharey=True)
+    fig,axes=plt.subplots(2,2,figsize=(11,8),sharex=True,sharey=True,layout='constrained')
     for ax,name in zip(axes.ravel(),['baseline_s20260622','tissue_range_s20260622','eikonal_s20260622','normal_hessian_s20260622']):
         arrays=np.load(a.root/name/'evaluation_arrays.npz');hs=arrays['calibration'];hm=hs.mean(0);span=hm[-1]-hm[0]
         for time,h in zip(arrays['times'],hs):ax.plot(arrays['grid'],(h-hm[0])/span,color=plt.cm.viridis(time),lw=1.5)
@@ -51,7 +51,7 @@ def main():
         ax.set_xlabel('True radial anatomical depth');ax.set_ylabel('Learned coordinate / pooled span');ax.grid(alpha=.15)
     fig.colorbar(plt.cm.ScalarMappable(cmap='viridis',norm=plt.Normalize(0,1)),ax=axes.ravel().tolist(),label='Developmental time',fraction=.025,pad=.02)
     fig.suptitle('Age-specific calibration on common depth support [0.05, 0.95]')
-    fig.subplots_adjust(top=.90,right=.9,hspace=.28,wspace=.22);fig.savefig(a.output/'calibration_comparison.png',dpi=180);plt.close(fig)
+    fig.savefig(a.output/'calibration_comparison.png',dpi=180);plt.close(fig)
     fig,axes=plt.subplots(1,3,figsize=(12,4))
     for ax,metric,title in zip(axes,['gauge','F','contour'],['Gauge distortion','Material-flow NRMSE','Physical-contour NRMSE']):
         for seed in sorted(reps.seed.unique()):
