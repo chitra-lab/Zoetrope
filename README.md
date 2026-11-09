@@ -11,7 +11,7 @@ Zoetrope learns a common anatomical coordinate system across tissue sections and
 
 ## Overview
 
-![Zoetrope method overview](assets/zoetrope_overview.png)
+![Zoetrope method overview](docs/zoetrope_overview.png)
 
 Time-series spatial transcriptomics measures spatial gene expression in different tissue sections collected at successive developmental stages. Because these measurements are destructive, individual cells cannot be directly tracked over time.
 
@@ -39,9 +39,9 @@ Zoetrope consists of three main computational steps.
 
 For each tissue section, Zoetrope learns a map
 
-\[
+$$\[
 \alpha_i:T_i\rightarrow\mathbb{R}^D
-\]
+\]$$
 
 that maps observed spatial positions to a common anatomical coordinate system.
 
@@ -51,9 +51,9 @@ The current implementation uses a one-dimensional common coordinate (\(D=1\)).
 
 Zoetrope learns an expression state map
 
-\[
+$$\[
 E(a,t)
-\]
+\]$$
 
 representing expected gene expression at anatomical coordinate \(a\) and developmental time \(t\).
 
@@ -63,24 +63,24 @@ Gene expression is modeled using a neural field with a library-size-adjusted Poi
 
 For a fixed learned expression field, Zoetrope derives the spatial velocity field by minimizing residual expression change under the Fisher information metric:
 
-\[
+$$\[
 V(a,t)=
 \underset{v}{\operatorname{argmin}}
 \left\|
 \partial_t E(a,t)+D_aE(a,t)v
 \right\|_h^2.
-\]
+\]$$
 
 For a one-dimensional anatomical coordinate, this gives
 
-\[
+$$\[
 V(a,t)=-
 \frac{
 \langle\partial_t E(a,t),\partial_a E(a,t)\rangle_h
 }{
 \|\partial_a E(a,t)\|_h^2
 }.
-\]
+\]$$
 
 Spatial trajectories are obtained by integrating the velocity field numerically using a fourth-order Runge-Kutta method.
 
