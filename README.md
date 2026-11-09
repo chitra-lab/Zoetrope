@@ -1,169 +1,281 @@
-# Anatomical Axis Dynamics Model (Flow-STP)
+# Zoetrope
 
-## Active Stage 1: shared anatomical coordinate + log-expression likelihood
 
-The **only selected Stage-1 runner** is `flow_stp.stage1.run_stage1a`.
-It learns one time-dependent anatomical coordinate and a shared log-expression
-field using the library-exposure Poisson observation model:
+**Spatial and gene expression trajectory inference from time-series spatial transcriptomics data**
 
-```text
-eta_g(z,t) = beta_g + neural_decoder_g(z,t)      # learned log E
-Y_cg ~ Poisson(L_c exp(eta_g(z_c,t_c)))          # observed raw counts
-Psi_g(z,t) = 2 exp(eta_g(z,t)/2)                 # derived Fisher-flat field
+Zoetrope is a geometric deep learning framework for reconstructing spatial and gene expression trajectories from time-series spatial transcriptomics (ST) data.
+
+Zoetrope learns a common anatomical coordinate system across tissue sections and models gene expression continuously over anatomical position and developmental time. Using the Fisher information metric, it identifies a spatial velocity field by minimizing residual gene expression change along cellular trajectories.
+
+**Paper:** James O'Quinn and Uthsav Chitra, *Zoetrope efficiently reconstructs spatial trajectories from time-series spatial transcriptomics data*. Submitted to RECOMB 2027.
+
+## Overview
+
+![Zoetrope method overview](assets/zoetrope_overview.png)
+
+Time-series spatial transcriptomics measures spatial gene expression in different tissue sections collected at successive developmental stages. Because these measurements are destructive, individual cells cannot be directly tracked over time.
+
+Zoetrope addresses two central challenges:
+
+1. **Anatomical alignment:** Tissue sections collected at different developmental stages may differ substantially in geometry, making their physical coordinates incomparable.
+2. **Trajectory identification:** Observed gene expression changes may arise from cellular movement, intrinsic molecular changes, or both.
+
+Zoetrope combines anatomical coordinate learning with a geometric principle for disentangling these processes.
+
+### Key features
+
+- **Shared anatomical coordinates:** Learns a common coordinate system across tissue sections, accommodating nonrigid geometric differences.
+- **Continuous expression modeling:** Learns a spatiotemporal gene expression field using neural networks and a Poisson observation model.
+- **Geometric trajectory inference:** Derives spatial velocity using the Fisher information metric without training an independent velocity network.
+- **Developmental progression:** Estimates cumulative molecular change along inferred trajectories.
+- **Multiple tissue sections:** Supports multiple sections measured at the same developmental timepoint.
+- **Scalability:** Designed to analyze spatial transcriptomics datasets containing millions of cells.
+
+## How Zoetrope works
+
+Zoetrope consists of three main computational steps.
+
+### 1. Common anatomical coordinate learning
+
+For each tissue section, Zoetrope learns a map
+
+\[
+\alpha_i:T_i\rightarrow\mathbb{R}^D
+\]
+
+that maps observed spatial positions to a common anatomical coordinate system.
+
+The current implementation uses a one-dimensional common coordinate (\(D=1\)).
+
+### 2. Spatiotemporal gene expression modeling
+
+Zoetrope learns an expression state map
+
+\[
+E(a,t)
+\]
+
+representing expected gene expression at anatomical coordinate \(a\) and developmental time \(t\).
+
+Gene expression is modeled using a neural field with a library-size-adjusted Poisson likelihood.
+
+### 3. Spatial trajectory inference
+
+For a fixed learned expression field, Zoetrope derives the spatial velocity field by minimizing residual expression change under the Fisher information metric:
+
+\[
+V(a,t)=
+\underset{v}{\operatorname{argmin}}
+\left\|
+\partial_t E(a,t)+D_aE(a,t)v
+\right\|_h^2.
+\]
+
+For a one-dimensional anatomical coordinate, this gives
+
+\[
+V(a,t)=-
+\frac{
+\langle\partial_t E(a,t),\partial_a E(a,t)\rangle_h
+}{
+\|\partial_a E(a,t)\|_h^2
+}.
+\]
+
+Spatial trajectories are obtained by integrating the velocity field numerically using a fourth-order Runge-Kutta method.
+
+Zoetrope also computes a developmental progression measure from cumulative Fisher-geometric expression change along inferred trajectories.
+
+## Installation
+
+Zoetrope requires Python 3.10 or newer and PyTorch.
+
+Clone the repository:
+
+```bash
+git clone https://github.com/chitra-lab/Zoetrope.git
+cd Zoetrope
 ```
 
-The model automatically chooses the coordinate input based on **physical tissue
-counts per unique observed developmental time**, not biological sample IDs:
+Create and activate a Python environment:
 
-- **Exactly one tissue at every time:** `z = alpha(x,y,t)`. No tissue ID.
-- **Two or more tissues at any observed time:** `z = alpha(x,y,t,onehot(tissue_id))`.
-  Tissue ID distinguishes physical slices, including replicates from the same
-  biological specimen.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
 
-The choice is automatic for a run; if even one time is replicated, all slices
-use the tissue-conditioned shared network. In both cases the coordinate model
-uses one **pooled robust global affine gauge** (0.5%–99.5% fixed spatial
-reference quantiles). Coordinates are standardized separately in each tissue
-before the neural coordinate map. Counts are not log-transformed or
-standardized; the model uses a clipped log library-size exposure offset.
+Install Zoetrope:
 
-**Frozen settings:** coordinate MLP (64,64) tanh; log-E decoder (128,128) GELU;
-AdamW learning rate 2e-3; weight decay 1e-5; 1500 epochs; 1024 observations
-per tissue per update; seed 20260622; no coordinate or nuisance penalties. Initial log-expression intercept is zero, matching the
-frozen synthetic configuration. Historical methods were moved to
-[`stage1/archive`](src/flow_stp/stage1/archive/README.md).
+```bash
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
 
-### Example
+For the PFC dataset loader, Jupyter notebooks, and testing dependencies:
+
+```bash
+python -m pip install -e ".[qian,notebooks,test]"
+```
+
+The current Python package is named `flow_stp`, reflecting the original development name of Zoetrope.
+
+### Verify installation
+
+```bash
+python -c "import flow_stp; print('Zoetrope imported successfully')"
+python -m pytest -q tests/test_stage2_dynamics.py
+```
+
+GPU acceleration is recommended for large spatial transcriptomics datasets.
+
+## Getting started
+
+### Input data
+
+Zoetrope takes time-series spatial transcriptomics measurements consisting of:
+
+- Gene expression counts for cells in each tissue section.
+- Two-dimensional spatial coordinates of those cells.
+- Developmental time associated with each section.
+- Tissue identifiers and a common gene panel.
+
+The model estimates the shared anatomical coordinate maps and spatiotemporal expression field jointly.
+
+### Python API
+
+The selected Stage 1 implementation can be imported using:
 
 ```python
-from flow_stp.stage1 import Stage1ARunConfig, run_stage1a
-from flow_stp.stage2 import estimate_local_dynamics, integrate_flow_rk4
+from flow_stp.stage1 import (
+    Stage1ARunConfig,
+    run_stage1a,
+)
 
+from flow_stp.stage2 import (
+    estimate_local_dynamics,
+    integrate_flow_rk4,
+)
+```
+
+Given prepared input arrays and tissue metadata:
+
+```python
 result = run_stage1a(
     counts_by_slice=counts_by_slice,
     spatial_by_slice=spatial_by_slice,
-    panel_df=panel_df,             # one row per physical tissue, with time
+    panel_df=panel_df,
     gene_names=gene_names,
     obs_df=obs_df,
-    config=Stage1ARunConfig(output_dir="experiments/selected_stage1"),
+    config=Stage1ARunConfig(
+        output_dir="experiments/example"
+    ),
 )
-print(result.model.config.coordinate_decoder)  # shared_time or shared_time_tissue
-field = result.model.fisher_flat
-local = estimate_local_dynamics(field, z, t)
-trajectory = integrate_flow_rk4(field, anchors, t0=0.0, t1=1.0)
 ```
 
-Use a **new** output directory: archived direct-Psi or historical log-E
-checkpoints are not interchangeable with this new model version. The runner
-writes a method-versioned manifest, checkpoints, coordinate tables, and
-training/validation diagnostics.
-
-## Stage 2: continuous Fisher dynamics
-
-Differentiate the derived Fisher-flat field `Psi(z,t)=2 exp(eta/2)` to obtain
-
-```text
-V(z,t) = - <Psi_z,Psi_t> / ||Psi_z||²
-q(z,t) = Psi_t + V(z,t) Psi_z
-```
-
-Then integrate `dF/dt = V(F,t)` by RK4. There is no independent Stage-2
-trajectory training. Physical velocity requires a physical-coordinate
-interpretation/inversion of the learned anatomical map; `V` by itself is
-velocity in learned `z` units.
-
-
-### Optional no-flux Stage-2 trajectory refinement
-
-The original Fisher projection and RK4 flow remain unchanged. An **optional**
-postprocessor fits a shared smooth, low-dimensional ODE to trajectories inferred
-from the Fisher flow. The default no-flux field is
-
-```text
-v_refined(z,t) = z(1-z) * sum_ij theta_ij Bernstein_i^3(z) Bernstein_j^3(t)
-```
-
-with coefficients fitted by minimizing integrated-trajectory position error plus
-a second-difference smoothness penalty. The synthetic no-rotation benchmark
-improved held-out instantaneous migration velocity NRMSE (0.950 to 0.221) and
-physical migration displacement NRMSE (0.234 to 0.0678). These results depend on
-the simulated tissue's correct material-boundary assumption and known geometry.
+The fitted model provides a Fisher-flat representation of the expression field:
 
 ```python
-from flow_stp.stage2 import RefinementConfig, fit_trajectory_velocity
+field = result.model.fisher_flat
+```
 
-# fisher_positions: [n_times, n_anchors], in ONE consistent bounded
-# material anatomical coordinate. Values outside the fitted gauge must
-# be registered/mapped before refinement.
-fit = fit_trajectory_velocity(
-    fisher_positions, times, config=RefinementConfig(no_flux=True)
+Given PyTorch tensors `z`, `t`, and `anchors` in the fitted anatomical coordinate system:
+
+```python
+local = estimate_local_dynamics(
+    field,
+    z,
+    t,
 )
-refined_flow = fit.field.integrate(initial_material_z, times)
-instantaneous_velocity = fit.field.velocity(material_z, time)
+
+trajectory = integrate_flow_rk4(
+    field,
+    anchors,
+    t0=0.0,
+    t1=1.0,
+)
 ```
 
-For XY physical velocity, `physical_velocity(fit.field, u, z, t,
-dG_dz=..., dG_dt=...)` returns relative migration velocity and total velocity.
-Geometry identification and inverse mapping from XY to (u,z) are not performed
-by this module; known synthetic geometry was used in the benchmark. A no-flux
-boundary is inappropriate if actual material migration crosses the endpoints.
+No independent spatial velocity network or additional Stage 2 training is required.
 
-## Layout
+## Tutorials
 
-- `src/flow_stp/stage1/stage1a.py`: active selected log-E shared model
-- `src/flow_stp/stage1/archive/`: historical direct-Psi and related variants
-- `src/flow_stp/stage2/`: differentiable Fisher projection and RK4 dynamics
-- `src/flow_stp/data/`: data loading
-- `src/flow_stp/simulations/benchmark_dgp/`: simulation tools
-- `tests/`: tests for active code
+### Human prefrontal cortex MERFISH dataset
 
-Legacy neural-PDE, inverse-flow and other previously deleted implementations
-remain accessible via Git history rather than being reintroduced into the active
-package.
+The repository includes a general workflow for applying Zoetrope to the developing human prefrontal cortex MERFISH dataset:
 
+[Qian PFC workflow notebook](flow_stp_full_stage1_qian_pfc_workflow.ipynb)
 
-## Installation and notebooks
+This notebook demonstrates:
 
-Install the core package with `pip install -e .`; add `[qian,notebooks]` for
-Qian h5ad loading and notebooks, or `[test]` for regression tests.
+1. Loading the MERFISH expression and spatial data.
+2. Fitting the shared anatomical coordinate and expression field.
+3. Deriving the Fisher-projected velocity.
+4. Integrating inferred spatial trajectories.
 
-- `flow_stp_full_stage1_qian_pfc_workflow.ipynb`: current Qian loading, selected
-  Stage 1, and derived Stage 2 workflow.
-- `notebooks/metrics_and_tissue_displacement.ipynb`: coordinate diagnostics,
-  optional RPCE, and the logistic material-flow tissue displacement benchmark.
-- `src/flow_stp/simulations/logistic_displacement.py`: reusable generator,
-  contour lift, and displacement evaluator. The notebook defaults to a smoke
-  check; enable `RUN_FULL` for the original 50 × 100,000-cell scale.
+**Note:** The notebook uses the current Zoetrope implementation, but its default tissue selection includes GW34. It is a general application example rather than an exact reproduction of the nine-tissue analysis or the GW20 holdout experiment in the RECOMB submission.
 
-The archive remains unchanged and accessible. The active API no longer accepts
-obsolete penalty, nuisance, coverage-endpoint or neural-flow settings.
-Existing checkpoints from the selected method are migrated when loading through
-`run_stage1a`: zero coverage endpoints and their optimizer group are removed.
-Nonzero endpoints and alternative models are rejected. New checkpoints use the
-clean state schema; older source versions cannot read them. Network initialization,
-log-E likelihood and pooled gauge are preserved. Removing clamped endpoint
-parameters also removes their contribution to gradient clipping, so training is
-not promised to be bit-for-bit identical to pre-cleanup runs.
+The Qian MERFISH dataset must be obtained separately. Update the notebook's `DATA_ROOT` and output directory before running it.
+
+### Synthetic examples
+
+Additional simulation and evaluation tools are available in:
+
+- [`src/flow_stp/simulations/`](src/flow_stp/simulations/)
+- [`notebooks/`](notebooks/)
+- [`benchmarks/`](benchmarks/)
+
+These include examples for evaluating anatomical coordinates, Fisher-projected dynamics, and tissue-space displacement.
+
+## Reproducing the paper
+
+The RECOMB 2027 manuscript evaluates Zoetrope on:
+
+1. A synthetic time-series atlas of developing crescent-shaped tissues.
+2. A human prefrontal cortex MERFISH atlas.
+
+The experiments evaluate anatomical coordinate recovery, spatial trajectory reconstruction, held-out gene expression prediction, developmental progression, and computational efficiency.
 
 
-## Tissue-space reconstruction and safety checks
+## Repository structure
 
-The recommended XY endpoint imputation preserves oriented **normalized
-contour arclength** between the source contour at `a` and the target contour
-at `F(a,t)`. See
-[the reconstruction guide](docs/tissue_coordinate_reconstruction.md).
-This requires a tissue mask (or an explicitly verified rectangular domain),
-a nondegenerate anatomical gradient, and a source point consistent with its
-level set. It does **not** identify a unique biological material trajectory.
-
-For synthetic evaluation, `evaluate_arclength_vs_oracle` compares the
-non-oracle reconstructed endpoint with a separate closest-to-true-destination
-contour oracle, reports paired displacement NRMSE and records reconstruction
-coverage. For Stage 2, `audit_flow_observability` flags low Fisher tangent
-energy along stored RK4 nodes without modifying the inferred velocity.
-
-Run targeted tests with:
-
-```bash
-pytest -q tests/test_tissue_coordinates.py tests/test_stage2_observability.py tests/test_arclength_displacement.py
+```text
+Zoetrope/
+├── src/
+│   └── flow_stp/
+│       ├── stage1/          # Anatomical coordinates and expression field
+│       ├── stage2/          # Fisher velocity and trajectory integration
+│       ├── data/            # Dataset loading utilities
+│       └── simulations/     # Synthetic data generators
+├── notebooks/              # Example and evaluation notebooks
+├── benchmarks/             # Benchmark utilities
+├── docs/                   # Technical documentation
+├── tests/                  # Unit and regression tests
+├── results/                # Selected benchmark visualizations
+├── pyproject.toml
+└── README.md
 ```
+
+Historical implementations are retained separately from the selected model.
+
+## Model implementation details
+
+The current implementation uses:
+
+| Component | Implementation |
+|---|---|
+| Anatomical coordinate network | MLP, two hidden layers of width 64, tanh |
+| Gene expression network | MLP, two hidden layers of width 128, GELU |
+| Expression likelihood | Poisson with library-size offsets |
+| Optimizer | AdamW |
+| Learning rate | 0.002 |
+| Weight decay | 0.00001 |
+| Training | 1,500 minibatch optimization updates |
+| Batch size | Up to 1,024 cells per tissue per update |
+| Spatial dynamics | Fisher-projected velocity |
+| Numerical integration | Fourth-order Runge-Kutta |
+
+When multiple tissue sections are observed at the same developmental time, the coordinate model can incorporate tissue identity while maintaining a shared anatomical representation.
+
+The current implementation uses a pooled global normalization of the inferred anatomical coordinate.
+
+
