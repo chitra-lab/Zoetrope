@@ -65,7 +65,7 @@ For a fixed learned expression field, Zoetrope derives the spatial velocity fiel
 
 $$\[
 V(a,t)=
-\underset{v}{\operatorname{argmin}}
+\underset{v}{\mathrm{argmin}}
 \left\|
 \partial_t E(a,t)+D_aE(a,t)v
 \right\|_h^2.
